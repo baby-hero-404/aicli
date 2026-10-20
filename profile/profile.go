@@ -10,10 +10,11 @@ import (
 
 // Profile is a built-in description of how to invoke one AI coding CLI headlessly.
 type Profile struct {
-	Command          string   `json:"command"`
-	Args             []string `json:"args"`
-	AuthCheckCommand string   `json:"auth_check_command,omitempty"`
-	TimeoutMinutes   int      `json:"timeout_minutes"`
+	Command            string   `json:"command"`
+	Args               []string `json:"args"`
+	AuthCheckCommand   string   `json:"auth_check_command,omitempty"`
+	TimeoutMinutes     int      `json:"timeout_minutes"`
+	CredentialProvider string   `json:"credential_provider,omitempty"`
 	// StateDirs are the directories, relative to HOME, where the CLI keeps its login and
 	// session state. Mount one per-account host directory at each of them to keep accounts
 	// apart and to persist a login across runs.
@@ -78,8 +79,9 @@ var profiles = map[string]Profile{
 		// exit-code-only checking would let a logged-out credential pass
 		// Preflight, so rules.DetectAuthInvalid checks this output
 		// for the loggedIn:false signature instead of trusting exit 0.
-		AuthCheckCommand: "claude auth status",
-		TimeoutMinutes:   cliProfileTimeoutMinutes,
+		AuthCheckCommand:   "claude auth status",
+		TimeoutMinutes:     cliProfileTimeoutMinutes,
+		CredentialProvider: "cli:claude",
 		// Verified against the binary: with CLAUDE_CONFIG_DIR set, claude keeps .claude.json
 		// inside that directory instead of at the root of HOME.
 		StateDirs: []string{".claude"},
@@ -94,8 +96,9 @@ var profiles = map[string]Profile{
 		Args: []string{"exec", "--full-auto", promptFileInstruction},
 		// "codex login status" is read-only and prints "Logged in using
 		// ChatGPT" on success (verified against the real binary).
-		AuthCheckCommand: "codex login status",
-		TimeoutMinutes:   cliProfileTimeoutMinutes,
+		AuthCheckCommand:   "codex login status",
+		TimeoutMinutes:     cliProfileTimeoutMinutes,
+		CredentialProvider: "cli:codex",
 		// Verified against the binary: codex keeps its state in ${CODEX_HOME:-$HOME/.codex}.
 		StateDirs: []string{".codex"},
 	},
@@ -114,13 +117,14 @@ var profiles = map[string]Profile{
 		// `agy` (not `antigravity`) and `-p` must sit immediately before the prompt.
 		// --output-format json appended last, same rationale/placement as
 		// claude_code above.
-		Args: []string{"--dangerously-skip-permissions", "-p", promptFileInstruction, "--output-format", "json"},
+		Args:               []string{"--dangerously-skip-permissions", "-p", promptFileInstruction, "--output-format", "json"},
 		// "agy models" needs a signed-in account: logged out it exits 1 with "Please sign in"
 		// (verified against the real binary). "agy --version" always succeeds, so it would let a
 		// logged-out credential through, after which a run blocks waiting for an auth code.
-		AuthCheckCommand: "agy models",
-		TimeoutMinutes:   cliProfileTimeoutMinutes,
-		StateDirs:        []string{".gemini"},
+		AuthCheckCommand:   "agy models",
+		TimeoutMinutes:     cliProfileTimeoutMinutes,
+		CredentialProvider: "cli:antigravity",
+		StateDirs:          []string{".gemini"},
 	},
 }
 

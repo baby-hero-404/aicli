@@ -26,6 +26,9 @@ const (
 // there, so auth always appears missing even though the mount worked.
 const HomeDir = "/home/agent"
 
+// SandboxHomeDir is an alias for HomeDir for backwards-compatibility.
+const SandboxHomeDir = HomeDir
+
 // CommandRequest describes one command to run in a sandbox.
 type CommandRequest struct {
 	// TaskID names the run; it picks the workspace directory when Workspace is empty.
