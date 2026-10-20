@@ -1,0 +1,10 @@
+.tokensave
+bin/
+vendor/
+*.env
+.env
+coverage.out
+coverage.html
+*.test
+dist/
+.claude
