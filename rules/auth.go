@@ -21,6 +21,14 @@ var authInvalidRules = map[string][]*regexp.Regexp{
 		// instead — verified against the real `claude` binary.
 		regexp.MustCompile(`(?i)"loggedIn"\s*:\s*false`),
 	},
+	"claude_code_notools": {
+		regexp.MustCompile(`(?i)not logged in`),
+		regexp.MustCompile(`(?i)please run\s*/login`),
+		regexp.MustCompile(`(?i)invalid api key`),
+		regexp.MustCompile(`(?i)failed to authenticate`),
+		regexp.MustCompile(`(?i)(oauth )?(access )?token (has been |was )?revoked`),
+		regexp.MustCompile(`(?i)"loggedIn"\s*:\s*false`),
+	},
 	"openai_codex": {
 		regexp.MustCompile(`(?i)not logged in`),
 		regexp.MustCompile(`(?i)please run\s*['"]?codex login`),
@@ -35,6 +43,15 @@ var authInvalidRules = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)please (log|sign) in`),
 		regexp.MustCompile(`(?i)failed to authenticate`),
 		// Printed by `agy -p` when no account is signed in (verified against agy 1.4.2).
+		regexp.MustCompile(`(?i)authentication (failed|interrupted)`),
+		regexp.MustCompile(`(?i)(oauth )?(access )?token (has been |was )?revoked`),
+	},
+	"antigravity_notools": {
+		regexp.MustCompile(`(?i)not logged in`),
+		regexp.MustCompile(`(?i)not authenticated`),
+		regexp.MustCompile(`(?i)authentication required`),
+		regexp.MustCompile(`(?i)please (log|sign) in`),
+		regexp.MustCompile(`(?i)failed to authenticate`),
 		regexp.MustCompile(`(?i)authentication (failed|interrupted)`),
 		regexp.MustCompile(`(?i)(oauth )?(access )?token (has been |was )?revoked`),
 	},

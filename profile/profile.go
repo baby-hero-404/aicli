@@ -126,6 +126,23 @@ var profiles = map[string]Profile{
 		CredentialProvider: "cli:antigravity",
 		StateDirs:          []string{".gemini"},
 	},
+	"claude_code_notools": {
+		Command:            "claude",
+		Args:               []string{"--tools", "", "--safe-mode", "--strict-mcp-config", "-p", promptFileInstruction, "--output-format", "json"},
+		AuthCheckCommand:   "claude auth status",
+		TimeoutMinutes:     cliProfileTimeoutMinutes,
+		CredentialProvider: "cli:claude",
+		StateDirs:          []string{".claude"},
+		StateEnv:           map[string]string{"CLAUDE_CONFIG_DIR": ".claude"},
+	},
+	"antigravity_notools": {
+		Command:            "agy",
+		Args:               []string{"--disable-slash-commands", "--output-format", "json", "-p", promptFileInstruction},
+		AuthCheckCommand:   "agy models",
+		TimeoutMinutes:     cliProfileTimeoutMinutes,
+		CredentialProvider: "cli:antigravity",
+		StateDirs:          []string{".gemini"},
+	},
 }
 
 // Lookup returns a copy of the built-in profile registered under key and true, or a zero value
@@ -157,9 +174,9 @@ func ResumeArgs(ref, sessionID string) []string {
 		return nil
 	}
 	switch ref {
-	case "claude_code":
+	case "claude_code", "claude_code_notools":
 		return []string{"--resume", sessionID}
-	case "antigravity":
+	case "antigravity", "antigravity_notools":
 		return []string{"--conversation", sessionID}
 	}
 	return nil

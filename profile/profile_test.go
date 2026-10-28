@@ -171,3 +171,40 @@ func TestProfiles_AuthCheckIsReal(t *testing.T) {
 		}
 	}
 }
+
+func TestProfiles_NoTools(t *testing.T) {
+	claudeNoTools, ok := Lookup("claude_code_notools")
+	if !ok {
+		t.Fatal("claude_code_notools profile must exist")
+	}
+	hasEmptyTools := false
+	for i, arg := range claudeNoTools.Args {
+		if arg == "--tools" && i+1 < len(claudeNoTools.Args) && claudeNoTools.Args[i+1] == "" {
+			hasEmptyTools = true
+			break
+		}
+	}
+	if !hasEmptyTools {
+		t.Errorf("claude_code_notools must pass --tools \"\" to disable all tools, got args: %v", claudeNoTools.Args)
+	}
+
+	agyNoTools, ok := Lookup("antigravity_notools")
+	if !ok {
+		t.Fatal("antigravity_notools profile must exist")
+	}
+	for _, arg := range agyNoTools.Args {
+		if strings.Contains(arg, "dangerously-skip-permissions") {
+			t.Errorf("antigravity_notools must not grant permission bypass for tools: %v", agyNoTools.Args)
+		}
+	}
+	hasDisableSlash := false
+	for _, arg := range agyNoTools.Args {
+		if arg == "--disable-slash-commands" {
+			hasDisableSlash = true
+		}
+	}
+	if !hasDisableSlash {
+		t.Errorf("antigravity_notools must pass --disable-slash-commands: %v", agyNoTools.Args)
+	}
+}
+

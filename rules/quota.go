@@ -29,6 +29,13 @@ var quotaRules = map[string][]quotaRule{
 			regexp.MustCompile(`(?i)rate limit`),
 		}},
 	},
+	"claude_code_notools": {
+		{Patterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)usage limit reached`),
+			regexp.MustCompile(`(?i)session limit`),
+			regexp.MustCompile(`(?i)rate limit`),
+		}},
+	},
 	"openai_codex": {
 		{Patterns: []*regexp.Regexp{
 			regexp.MustCompile(`(?i)rate limit`),
@@ -38,6 +45,15 @@ var quotaRules = map[string][]quotaRule{
 		}},
 	},
 	"antigravity": {
+		{Patterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)quota (?:exceeded|reached)`),
+			regexp.MustCompile(`(?i)rate limit`),
+			regexp.MustCompile(`(?i)resource_exhausted`),
+			regexp.MustCompile(`(?i)too many requests`),
+			regexp.MustCompile(`\b429\b`),
+		}},
+	},
+	"antigravity_notools": {
 		{Patterns: []*regexp.Regexp{
 			regexp.MustCompile(`(?i)quota (?:exceeded|reached)`),
 			regexp.MustCompile(`(?i)rate limit`),
@@ -94,12 +110,12 @@ func DetectQuotaExceeded(ref string, combined string, exitCode int) (bool, time.
 	var cooldown time.Duration
 
 	// Attempt to parse dynamic cooldown duration based on provider
-	if ref == "antigravity" {
+	if ref == "antigravity" || ref == "antigravity_notools" {
 		// Example: "Resets in 17h40m33s"
 		if m := antigravityResetRe.FindStringSubmatch(combined); len(m) > 3 {
 			cooldown = parseResetDuration(m[1], m[2], m[3])
 		}
-	} else if ref == "claude_code" {
+	} else if ref == "claude_code" || ref == "claude_code_notools" {
 		// Example: "Resets 12:10pm (UTC)"
 		if m := claudeResetRe.FindStringSubmatch(combined); len(m) > 1 {
 			timeStr := m[1]
