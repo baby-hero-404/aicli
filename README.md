@@ -33,6 +33,12 @@ res, _ := (&run.Runner{Runtime: docker}).Run(ctx, run.Request{
 | `capture` | Interactive CLI login in a sandbox; returns the credential files the CLI wrote |
 | `capture/ticket` | Single-use, short-lived tickets that authorize a WebSocket without exposing a bearer token (`Store` interface + in-memory implementation) |
 | `capture/wsgorilla` | Serves a capture session over WebSocket (gorilla/websocket), with origin allowlist |
+| `run/stream`, `run/stream/agy` | CLI-neutral event contract for live output, and the decoder for agy's `stream-json` |
+| `conversation` | Resumable, streamable conversations: turn lifecycle, history, export, cancel. The host plugs in `Store`, `Authorizer`, `Resolver` |
+| `conversation/memstore`, `conversation/storetest` | In-memory `Store` for tests and demos; the contract suite every `Store` should pass |
+| `transport/httpapi` | Mountable `net/http` handler: REST + Server-Sent Events for `conversation` |
+| `toolchain`, `cmd/aicli-tools` | Install CLI versions once on the host and mount them read-only into every sandbox; switch or roll back without rebuilding images |
+| `web/` (`@aicli/ui`) | npm package: framework-free API client (`@aicli/ui/client`) and React components (`@aicli/ui/react`) |
 
 ## Design rules
 
@@ -41,6 +47,12 @@ res, _ := (&run.Runner{Runtime: docker}).Run(ctx, run.Request{
 - **Opt-in caches.** Package-install caches (npm, pip, Go modules, Maven/Gradle, pub) are mounted only when the host sets `sandbox.WithCacheRoot(dir)`, namespaced per `CommandRequest.CacheScope` (e.g. a tenant ID).
 - **Framework-free cores.** Transport and vendor adapters live in sub-packages named after what they adapt (`capture/wsgorilla`, `sandbox/docker`), so code that only needs the interfaces never builds the Docker SDK. Test doubles live in `<pkg>/<pkg>mock` (`sandbox/sandboxmock`).
 - **Standalone.** aicli has no dependency on other internal libraries.
+
+## Conversations and the UI
+
+`conversation` + `transport/httpapi` + `@aicli/ui` give a host a chat UI over a headless CLI (currently Antigravity/agy): create a conversation, reopen an old one, send messages, watch the answer stream in, cancel, resume the CLI session and export the history. The host writes only authentication, authorization and a `Store`; see **[docs/conversation.md](docs/conversation.md)** and `examples/go-server`.
+
+Security model in one paragraph: the browser sends intent, never execution. A request carries a profile name from an allowlist, a message and an idempotency key; workspace, image, credentials and session directory come from the host's `Resolver`, and unknown JSON fields are rejected. Every read, send, cancel, export and stream goes through the host's `Authorizer` (default: deny), conversation IDs are random and the CLI's own session ID never leaves the server, output is redacted before it is stored or sent, and the UI renders it as text only.
 
 ## Multiple accounts
 
@@ -71,7 +83,13 @@ healthcheck: "node --version"
 
 ## Images
 
+To upgrade the CLIs without rebuilding images, install them on the host with `aicli-tools` and wrap your runtime with `toolchain.Wrap`; see **[docs/cli-toolchain.md](docs/cli-toolchain.md)**. The CLIs in the image remain the fallback for any tool not installed that way.
+
 aicli does not decide what toolchains your agents need. `docker/base/Dockerfile` is a reference base image (pinned Claude Code, Codex and Antigravity `agy` CLIs, each version-locked and agy checksum-verified with self-update disabled; non-root `agent` user with home `/home/agent`; `tini`); build it with `make image-base` and extend it with `FROM aicli/base` for your own toolchains.
+
+## Development
+
+`make verify` runs everything: gofmt, `go vet`, the Go tests with `-race`, and the `web/` checks (typecheck, eslint, vitest, build, publint, attw). `web/` uses pnpm with a committed lockfile, exact versions, a 7-day minimum release age and no dependency build scripts; see `web/pnpm-workspace.yaml`.
 
 ## Docker integration tests
 

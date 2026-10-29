@@ -3,6 +3,8 @@
 package profile
 
 import (
+	"errors"
+	"fmt"
 	"maps"
 	"path"
 	"slices"
@@ -23,6 +25,10 @@ type Profile struct {
 	// the CLI keep all of its state inside StateDirs (for example claude otherwise also writes
 	// ~/.claude.json at the root of HOME). Resolve it for a given HOME with Env.
 	StateEnv map[string]string `json:"state_env,omitempty"`
+	// StreamArgs are the flags that make the CLI print its progress as machine-readable
+	// events while it runs (replacing the "--output-format <fmt>" pair in Args). Empty means
+	// the profile cannot stream. Apply them with StreamingArgs.
+	StreamArgs []string `json:"stream_args,omitempty"`
 }
 
 // Env returns StateEnv resolved against home, e.g. {"CLAUDE_CONFIG_DIR": "/home/agent/.claude"}.
@@ -117,7 +123,7 @@ var profiles = map[string]Profile{
 		// `agy` (not `antigravity`) and `-p` must sit immediately before the prompt.
 		// --output-format json appended last, same rationale/placement as
 		// claude_code above.
-		Args:               []string{"--dangerously-skip-permissions", "-p", promptFileInstruction, "--output-format", "json"},
+		Args: []string{"--dangerously-skip-permissions", "-p", promptFileInstruction, "--output-format", "json"},
 		// "agy models" needs a signed-in account: logged out it exits 1 with "Please sign in"
 		// (verified against the real binary). "agy --version" always succeeds, so it would let a
 		// logged-out credential through, after which a run blocks waiting for an auth code.
@@ -125,6 +131,7 @@ var profiles = map[string]Profile{
 		TimeoutMinutes:     cliProfileTimeoutMinutes,
 		CredentialProvider: "cli:antigravity",
 		StateDirs:          []string{".gemini"},
+		StreamArgs:         agyStreamArgs,
 	},
 	"claude_code_notools": {
 		Command:            "claude",
@@ -142,8 +149,13 @@ var profiles = map[string]Profile{
 		TimeoutMinutes:     cliProfileTimeoutMinutes,
 		CredentialProvider: "cli:antigravity",
 		StateDirs:          []string{".gemini"},
+		StreamArgs:         agyStreamArgs,
 	},
 }
+
+// agyStreamArgs makes agy print NDJSON events (see run/stream/agy) instead of one summary
+// object. Replaces "--output-format json".
+var agyStreamArgs = []string{"--output-format", "stream-json"}
 
 // Lookup returns a copy of the built-in profile registered under key and true, or a zero value
 // and false if key is unknown. The copy's slices are private to the caller, so they may be
@@ -182,8 +194,45 @@ func ResumeArgs(ref, sessionID string) []string {
 	return nil
 }
 
+// ErrStreamingUnsupported is returned by StreamingArgs for a profile that cannot stream.
+var ErrStreamingUnsupported = errors.New("profile: streaming is not supported")
+
+const outputFormatFlag = "--output-format"
+
+// StreamingArgs returns args with the profile's streaming flags in place of its
+// "--output-format <fmt>" pair, wherever that pair sits; if args has no such pair the
+// streaming flags are appended. args is not modified. Flag placement is left as the caller
+// had it on purpose: agy's -p takes the very next token as the prompt, so nothing may be
+// inserted between -p and its value, and replacing in place guarantees that.
+//
+// It returns ErrStreamingUnsupported for an unknown ref or a profile without StreamArgs.
+func StreamingArgs(ref string, args []string) ([]string, error) {
+	p, ok := profiles[ref]
+	if !ok || len(p.StreamArgs) == 0 {
+		return nil, fmt.Errorf("%w: %q", ErrStreamingUnsupported, ref)
+	}
+	out := make([]string, 0, len(args)+len(p.StreamArgs))
+	replaced := false
+	for i := 0; i < len(args); i++ {
+		if args[i] == outputFormatFlag && !replaced {
+			out = append(out, p.StreamArgs...)
+			replaced = true
+			if i+1 < len(args) {
+				i++ // skip the old format value (a dangling flag has none)
+			}
+			continue
+		}
+		out = append(out, args[i])
+	}
+	if !replaced {
+		out = append(out, p.StreamArgs...)
+	}
+	return out, nil
+}
+
 func (p Profile) clone() Profile {
 	p.Args = slices.Clone(p.Args)
+	p.StreamArgs = slices.Clone(p.StreamArgs)
 	p.StateDirs = slices.Clone(p.StateDirs)
 	p.StateEnv = maps.Clone(p.StateEnv)
 	return p

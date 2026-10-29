@@ -395,3 +395,25 @@ func TestPreflight_UsesSessionState(t *testing.T) {
 		t.Errorf("auth check must see the persisted login: mounts=%v env=%v", auth.SessionMounts, auth.Env)
 	}
 }
+
+func TestRunAndPreflightPassToolVersions(t *testing.T) {
+	pins := map[string]string{"agy": "1.4.10"}
+	r, rt := newRunner()
+	req := baseReq(t)
+	req.ToolVersions = pins
+	req.AuthCheckCommand = "true"
+	if _, err := r.Preflight(context.Background(), req); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if _, err := r.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rt.reqs) != 3 {
+		t.Fatalf("requests = %d, want 3 (binary check, auth check, run)", len(rt.reqs))
+	}
+	for i, sr := range rt.reqs {
+		if sr.ToolVersions["agy"] != "1.4.10" {
+			t.Errorf("request %d lacks the pin: %v", i, sr.ToolVersions)
+		}
+	}
+}

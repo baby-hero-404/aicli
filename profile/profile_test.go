@@ -1,6 +1,8 @@
 package profile
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -208,3 +210,90 @@ func TestProfiles_NoTools(t *testing.T) {
 	}
 }
 
+func TestStreamingArgs(t *testing.T) {
+	prompt := promptFileInstruction
+	tests := []struct {
+		name    string
+		ref     string
+		args    []string
+		want    []string
+		wantErr bool
+	}{
+		{
+			name: "antigravity: trailing pair replaced, -p keeps its value",
+			ref:  "antigravity",
+			args: []string{"--dangerously-skip-permissions", "-p", prompt, "--output-format", "json"},
+			want: []string{"--dangerously-skip-permissions", "-p", prompt, "--output-format", "stream-json"},
+		},
+		{
+			name: "antigravity_notools: leading pair replaced in place",
+			ref:  "antigravity_notools",
+			args: []string{"--disable-slash-commands", "--output-format", "json", "-p", prompt},
+			want: []string{"--disable-slash-commands", "--output-format", "stream-json", "-p", prompt},
+		},
+		{
+			name: "no pair: streaming flags appended after the prompt",
+			ref:  "antigravity",
+			args: []string{"-p", prompt},
+			want: []string{"-p", prompt, "--output-format", "stream-json"},
+		},
+		{
+			name: "dangling flag at the end is replaced, not duplicated",
+			ref:  "antigravity",
+			args: []string{"-p", prompt, "--output-format"},
+			want: []string{"-p", prompt, "--output-format", "stream-json"},
+		},
+		{name: "claude has no stream args", ref: "claude_code", args: []string{"-p", prompt}, wantErr: true},
+		{name: "unknown ref", ref: "nope", args: []string{"-p", prompt}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := slices.Clone(tt.args)
+			got, err := StreamingArgs(tt.ref, tt.args)
+			if tt.wantErr {
+				if !errors.Is(err, ErrStreamingUnsupported) {
+					t.Fatalf("err = %v, want ErrStreamingUnsupported", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("StreamingArgs: %v", err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("got  %q\nwant %q", got, tt.want)
+			}
+			if !slices.Equal(tt.args, in) {
+				t.Errorf("input was modified: %q", tt.args)
+			}
+		})
+	}
+}
+
+func TestStreamingArgs_BuiltinProfilesKeepPromptNextToDashP(t *testing.T) {
+	for _, ref := range []string{"antigravity", "antigravity_notools"} {
+		p, _ := Lookup(ref)
+		got, err := StreamingArgs(ref, p.Args)
+		if err != nil {
+			t.Fatalf("%s: %v", ref, err)
+		}
+		i := slices.Index(got, "-p")
+		if i < 0 || i+1 >= len(got) || got[i+1] != promptFileInstruction {
+			t.Errorf("%s: -p must be immediately followed by the prompt instruction: %q", ref, got)
+		}
+		if !slices.Contains(got, "stream-json") || slices.Contains(got, "json") {
+			t.Errorf("%s: output format not swapped: %q", ref, got)
+		}
+	}
+}
+
+func TestLookup_StreamArgsAreCopies(t *testing.T) {
+	p, _ := Lookup("antigravity")
+	if len(p.StreamArgs) == 0 {
+		t.Fatal("antigravity should stream")
+	}
+	p.StreamArgs[1] = "mutated"
+	again, _ := Lookup("antigravity")
+	if again.StreamArgs[1] != "stream-json" {
+		t.Errorf("registry StreamArgs was mutated: %q", again.StreamArgs)
+	}
+}

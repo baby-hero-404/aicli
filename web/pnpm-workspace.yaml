@@ -1,0 +1,12 @@
+# pnpm settings for this package. They exist for supply-chain safety; do not loosen them to
+# make an install pass.
+
+# Only resolve versions that have been public for at least 7 days (minutes). An explicit value
+# is strict: a newer version is never picked silently.
+minimumReleaseAge: 10080
+
+# Always write exact versions into package.json.
+saveExact: true
+
+# Dependency build scripts are denied by default in pnpm 12. `allowBuilds` is deliberately not
+# set: none of the dependencies needs to run code at install time.

@@ -74,6 +74,10 @@ func TestValidateMounts(t *testing.T) {
 		{"session target traversal", CommandRequest{SessionMounts: map[string]string{"/home/agent/../x": "/abs"}}, true},
 		{"session source relative", CommandRequest{SessionMounts: map[string]string{"/home/agent/.c": "rel/dir"}}, true},
 		{"cache target relative", CommandRequest{ExtraCacheMounts: map[string]string{"cache": "/abs"}}, true},
+		{"read-only valid", CommandRequest{ReadOnlyMounts: map[string]string{"/opt/aicli/tools/agy": "/srv/tools/agy/1.4.10"}}, false},
+		{"read-only target traversal", CommandRequest{ReadOnlyMounts: map[string]string{"/opt/aicli/../../etc": "/srv/x"}}, true},
+		{"read-only target relative", CommandRequest{ReadOnlyMounts: map[string]string{"opt/tools": "/srv/x"}}, true},
+		{"read-only source relative", CommandRequest{ReadOnlyMounts: map[string]string{"/opt/tools": "tools/agy"}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -78,6 +78,24 @@ type CommandRequest struct {
 	// file under LogsHostDir, but the two are independent knobs.
 	LogFilePath string
 
+	// ReadOnlyMounts are bind mounts the sandbox cannot write: container target path -> host
+	// source path, a file or a directory that must already exist. Used for CLI tools installed
+	// on the host (see package toolchain). Unlike SessionMounts, nothing is created on the host.
+	ReadOnlyMounts map[string]string
+
+	// ToolVersions pins versions of host-installed CLI tools for this request (tool name ->
+	// version, e.g. "agy" -> "1.4.10"). Runtimes ignore it; toolchain.Wrap reads it and turns it
+	// into ReadOnlyMounts.
+	ToolVersions map[string]string
+
+	// Output, if set, receives the subprocess's stdout as it is produced, in addition to
+	// CommandResult.Stdout. Only stdout: stderr is not forwarded. A supporting runtime calls
+	// Write from its own goroutine while Run is in progress and stops calling it before Run
+	// returns; writes are not synchronized with the caller, so Output must not be shared with
+	// code that reads it concurrently. Runtimes without live output (StubRuntime) write the
+	// final stdout once.
+	Output io.Writer
+
 	// IdleTimeout, if > 0, overrides DefaultIdleTimeout: a supporting runtime kills the container if no
 	// stdout/stderr byte is observed for this long, distinct from Timeout
 	// (an absolute cap regardless of activity) — a long but genuinely
@@ -198,9 +216,13 @@ func (r *StubRuntime) Run(ctx context.Context, req CommandRequest) (*CommandResu
 		return nil, ctx.Err()
 	default:
 	}
+	stdout := fmt.Sprintf("stub sandbox executed: %s", strings.Join(req.Command, " "))
+	if req.Output != nil {
+		_, _ = io.WriteString(req.Output, stdout)
+	}
 	return &CommandResult{
 		ExitCode: 0,
-		Stdout:   fmt.Sprintf("stub sandbox executed: %s", strings.Join(req.Command, " ")),
+		Stdout:   stdout,
 		Stderr:   "",
 	}, nil
 }

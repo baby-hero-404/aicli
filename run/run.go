@@ -12,6 +12,7 @@ import (
 
 	"github.com/baby-hero-404/aicli/profile"
 	"github.com/baby-hero-404/aicli/rules"
+	"github.com/baby-hero-404/aicli/run/stream"
 	"github.com/baby-hero-404/aicli/sandbox"
 )
 
@@ -79,10 +80,22 @@ type Request struct {
 	CaptureFiles []string
 	// ResumeSessionID continues a previous session when the profile supports it.
 	ResumeSessionID string
+	// ToolVersions pins host-installed CLI versions for this run (tool -> version); empty
+	// means each tool's current version. It only has an effect when the runtime is wrapped with
+	// toolchain.Wrap. Set it from server-side state, never from client input.
+	ToolVersions map[string]string
 	// ExtraArgs are appended after Args and any resume arguments.
 	ExtraArgs []string
 	// Setup and Cleanup are shell snippets run before the CLI and after it; Cleanup always runs.
 	Setup, Cleanup string
+	// OnEvent, if set, receives the CLI's output as normalized events while it runs. The
+	// profile must support streaming (profile.Profile.StreamArgs) or Run fails with
+	// ErrInvalidRequest. The CLI is switched to its streaming output format, so Result.Output
+	// then holds NDJSON events rather than a JSON summary. Events are redacted before they are
+	// passed on and never carry the CLI's session ID (see Result.SessionID). OnEvent is called
+	// from the runtime's output goroutine, one event at a time, and is not called after Run
+	// returns.
+	OnEvent func(stream.Event)
 
 	// TaskID names the run for the sandbox runtime (workspace naming, logs).
 	TaskID      string
@@ -120,6 +133,17 @@ type Result struct {
 	// UpdatedCredentialFiles holds credential files the CLI rewrote during the run (a refreshed
 	// token), keyed by path relative to HOME. Persist them or the next run replays a stale one.
 	UpdatedCredentialFiles map[string]string
+	// SessionID is the CLI's own session/conversation ID as reported on the event stream. It
+	// is only set when Request.OnEvent was used and the CLI reported one. Treat it like a
+	// credential for the conversation: keep it server side.
+	SessionID string
+	// SessionMismatch is true when the run was asked to resume ResumeSessionID but the CLI
+	// started a different session (agy does this without any error for an unknown ID). The run
+	// was stopped, no events were forwarded from that point, and SessionID holds the unwanted
+	// new session's ID, which the caller should discard. Only set when OnEvent was used.
+	SessionMismatch bool
+	// SkippedLines counts stdout lines the stream decoder could not parse (OnEvent only).
+	SkippedLines int
 	// Telemetry is set when the CLI reported usage.
 	Telemetry *Telemetry
 }
@@ -189,7 +213,7 @@ func (r *Runner) Preflight(ctx context.Context, req Request) (warning string, er
 	base := sandbox.CommandRequest{
 		TaskID: req.TaskID, Workspace: req.Workspace, Image: req.Image,
 		NetworkMode: req.NetworkMode, Timeout: preflightTimeout, CredentialFiles: creds,
-		SessionMounts: mounts,
+		SessionMounts: mounts, ToolVersions: req.ToolVersions,
 	}
 
 	check := base
@@ -236,6 +260,13 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return nil, fmt.Errorf("%w: command is required", ErrInvalidRequest)
 	}
+	var sink *eventSink
+	if req.OnEvent != nil {
+		var err error
+		if sink, err = newEventSink(req.Profile, req.ResumeSessionID, req.OnEvent); err != nil {
+			return nil, err
+		}
+	}
 	workDir := req.WorkDir
 	if workDir == "" {
 		workDir = containerRoot
@@ -265,6 +296,12 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 		a = strings.ReplaceAll(a, "{prompt_file}", promptFile)
 		a = strings.ReplaceAll(a, "{workdir}", workDir)
 		args = append(args, a)
+	}
+	if sink != nil {
+		var err error
+		if args, err = profile.StreamingArgs(req.Profile, args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		}
 	}
 	args = append(args, profile.ResumeArgs(req.Profile, req.ResumeSessionID)...)
 	args = append(args, req.ExtraArgs...)
@@ -306,16 +343,43 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	}
 	creds := credentialTargets(req.CredentialFiles)
 
-	out, err := r.Runtime.Run(ctx, sandbox.CommandRequest{
+	sreq := sandbox.CommandRequest{
 		TaskID: req.TaskID, Workspace: req.Workspace, Image: req.Image,
 		Command: []string{"bash", "-lc", script}, Env: env, NetworkMode: req.NetworkMode,
 		Timeout: timeout, IdleTimeout: req.IdleTimeout, CredentialFiles: creds,
 		SessionMounts: mounts, LogsHostDir: req.LogsHostDir, LogFilePath: req.LogFilePath,
-	})
+		ToolVersions: req.ToolVersions,
+	}
+	var lines *stream.LineWriter
+	if sink != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		sink.onMismatch = cancel
+		lines = stream.NewLineWriter(0, sink.line)
+		sreq.Output = lines
+	}
+	out, err := r.Runtime.Run(ctx, sreq)
+	if sink != nil {
+		lines.Flush()
+		sink.flushText()
+		if sink.mismatch {
+			// The run was cut short on purpose, so whatever the runtime returned is moot.
+			return &Result{
+				SessionMismatch: true, SessionID: sink.sessionID,
+				Error: "run: the CLI started a different session than the one to resume",
+			}, nil
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("run: sandbox run failed: %w", err)
 	}
-	return classify(req, out, quoted), nil
+	res := classify(req, out, quoted)
+	if sink != nil {
+		res.SessionID = sink.sessionID
+		res.SkippedLines = sink.skipped + lines.Dropped()
+	}
+	return res, nil
 }
 
 func classify(req Request, out *sandbox.CommandResult, quotedCommand string) *Result {

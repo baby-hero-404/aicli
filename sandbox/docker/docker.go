@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -180,6 +181,8 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 			Target: targetContainerPath,
 		})
 	}
+
+	mounts = append(mounts, readOnlyMounts(req)...)
 
 	// Package caches the caller asked for (sandbox.Manager fills these from its cache root).
 	// Writable, since installing anything not yet cached writes into them.
@@ -354,7 +357,7 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 	// concurrently with the wait means a real-time on-disk copy (via
 	// req.LogFilePath) survives up to the
 	// point of failure even when the container itself never exits cleanly.
-	stdout, stderr, logsErrCh, logCloser, activity, loopDet, err := r.streamContainerLogs(ctx, containerID, req.LogFilePath)
+	stdout, stderr, logsErrCh, logCloser, activity, loopDet, err := r.streamContainerLogs(ctx, containerID, req.LogFilePath, req.Output)
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +474,7 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 // that observed every byte
 // written to either stream, so Run's watchdog can poll them without a second
 // pass over the output.
-func (r *Runtime) streamContainerLogs(ctx context.Context, containerID, logFilePath string) (*bytes.Buffer, *bytes.Buffer, chan error, func(), *activityWriter, *lineLoopDetector, error) {
+func (r *Runtime) streamContainerLogs(ctx context.Context, containerID, logFilePath string, output io.Writer) (*bytes.Buffer, *bytes.Buffer, chan error, func(), *activityWriter, *lineLoopDetector, error) {
 	logReader, err := r.client.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -512,6 +515,10 @@ func (r *Runtime) streamContainerLogs(ctx context.Context, containerID, logFileP
 	loopDet := newLineLoopDetector(io.Discard)
 	stdoutW = io.MultiWriter(stdoutW, activity, loopDet)
 	stderrW = io.MultiWriter(stderrW, activity, loopDet)
+	if output != nil {
+		// Last, so the buffers, log file and watchdogs have seen a chunk before the caller does.
+		stdoutW = io.MultiWriter(stdoutW, output)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -557,6 +564,8 @@ func (r *Runtime) RunInteractive(ctx context.Context, req sandbox.CommandRequest
 			Target: "/workspace",
 		},
 	}
+	// Login sessions need the same host-installed CLIs as runs.
+	mounts = append(mounts, readOnlyMounts(req)...)
 	env := make([]string, 0, len(envMap))
 	for key, value := range envMap {
 		env = append(env, key+"="+value)
@@ -685,4 +694,18 @@ func readRegularFile(p string) ([]byte, error) {
 		return nil, fmt.Errorf("%s exceeds %d bytes", p, maxCredentialReadBytes)
 	}
 	return os.ReadFile(p)
+}
+
+// readOnlyMounts turns req.ReadOnlyMounts into read-only bind mounts, in a stable order.
+func readOnlyMounts(req sandbox.CommandRequest) []mount.Mount {
+	targets := make([]string, 0, len(req.ReadOnlyMounts))
+	for target := range req.ReadOnlyMounts {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	out := make([]mount.Mount, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, mount.Mount{Type: mount.TypeBind, Source: req.ReadOnlyMounts[target], Target: target, ReadOnly: true})
+	}
+	return out
 }

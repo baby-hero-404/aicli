@@ -12,8 +12,8 @@ ARG NODE_IMAGE=node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d
 FROM ${NODE_IMAGE}
 
 # Agent CLI versions are pinned: a surprise upgrade must never change behavior silently.
-ARG CLAUDE_CODE_VERSION=2.1.304
-ARG CODEX_VERSION=0.163.0
+ARG CLAUDE_CODE_VERSION=2.1.312
+ARG CODEX_VERSION=0.165.0
 # UID/GID of the agent user. Match the host user that owns bind-mounted workspaces to avoid
 # permission errors (the Makefile passes the invoking user's IDs).
 ARG USER_UID=1000
@@ -23,11 +23,11 @@ ARG USER_GID=1000
 # itself with the values pinned here instead of running the script. To upgrade, read
 # https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_<amd64|arm64>.json
 # and copy version, url and sha512.
-ARG AGY_VERSION=1.4.2
-ARG AGY_URL_AMD64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.2-4835981233356800/linux-x64/cli_linux_x64.tar.gz
-ARG AGY_SHA512_AMD64=4a393afc1369cee94e817c1b430c9128d02b12ebd4d5703ace5cd47b2333e216d673fb0097cbf7195f757b110163ba9850e9eea3fdbbaddd4b25668b82c03f05
-ARG AGY_URL_ARM64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.2-4835981233356800/linux-arm/cli_linux_arm64.tar.gz
-ARG AGY_SHA512_ARM64=f4655468d3303e6039cbcf1a30769e3cb5c4e16d149fba0d08e83f91f0f2b07cb623a4adb8615ca7a8fc73bf2445301e0e1ab82ea89f6aa44cbd9a9e96703e19
+ARG AGY_VERSION=1.4.10
+ARG AGY_URL_AMD64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.10-5501573669978112/linux-x64/cli_linux_x64.tar.gz
+ARG AGY_SHA512_AMD64=3a14c21697e86349ce8402e0b1889cbd1d3a5f4e2cb4dc43aae1c48c404240c2ccff9f775eec277e1f759234a33ec026645c63ed22ab6f6ebede561eda7c38b6
+ARG AGY_URL_ARM64=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.10-5501573669978112/linux-arm/cli_linux_arm64.tar.gz
+ARG AGY_SHA512_ARM64=0182c23882b174c6f2968ad88de43262692ec363a938031319131551dab41cc6aca573d28d264095db357e49881a211114afe9f974386ed37208760f401ba98c
 # Set by BuildKit to the platform being built (amd64, arm64).
 ARG TARGETARCH
 

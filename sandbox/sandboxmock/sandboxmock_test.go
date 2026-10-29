@@ -62,3 +62,33 @@ func TestRuntime_OnRunAndInteractive(t *testing.T) {
 		t.Errorf("interactive: %q, %v", out.String(), err)
 	}
 }
+
+func TestRuntime_WritesStdoutToOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *sandbox.CommandResult
+		want   string
+	}{
+		{"scripted stdout is delivered", &sandbox.CommandResult{Stdout: "line1\nline2\n"}, "line1\nline2\n"},
+		{"empty stdout writes nothing", &sandbox.CommandResult{}, ""},
+		{"stderr is not forwarded", &sandbox.CommandResult{Stderr: "oops"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			m := &Runtime{Results: []*sandbox.CommandResult{tt.result}}
+			res, err := m.Run(context.Background(), sandbox.CommandRequest{Output: &out})
+			if err != nil || res == nil {
+				t.Fatalf("Run = %+v, %v", res, err)
+			}
+			if out.String() != tt.want {
+				t.Errorf("Output = %q, want %q", out.String(), tt.want)
+			}
+		})
+	}
+	// A nil Output keeps today's behavior.
+	m := &Runtime{Results: []*sandbox.CommandResult{{Stdout: "x"}}}
+	if res, err := m.Run(context.Background(), sandbox.CommandRequest{}); err != nil || res.Stdout != "x" {
+		t.Errorf("nil Output: %+v, %v", res, err)
+	}
+}

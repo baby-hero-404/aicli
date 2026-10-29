@@ -8,3 +8,4 @@ coverage.html
 *.test
 dist/
 .claude
+node_modules/

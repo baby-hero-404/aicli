@@ -59,6 +59,9 @@ func (m *Runtime) Run(_ context.Context, req sandbox.CommandRequest) (*sandbox.C
 	if res == nil {
 		res = &sandbox.CommandResult{}
 	}
+	if req.Output != nil && res.Stdout != "" {
+		_, _ = io.WriteString(req.Output, res.Stdout)
+	}
 	return res, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -260,5 +261,107 @@ func TestRuntime_ManagerCacheMounts(t *testing.T) {
 	}
 	if out := run("tenant-b", "cat /home/agent/.npm/pkg 2>/dev/null || echo none"); strings.Contains(out, "cached") {
 		t.Errorf("cache leaked across scopes: %q", out)
+	}
+}
+
+// syncBuffer collects what the runtime streams to CommandRequest.Output from its copy
+// goroutine.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+	at  []time.Time
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.at = append(b.at, time.Now())
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestRuntime_StreamsStdoutBeforeExit(t *testing.T) {
+	requireDockerTests(t)
+	ctx := context.Background()
+	rt, err := New(testConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := rt.Prewarm(ctx); err != nil {
+		t.Fatalf("Prewarm: %v", err)
+	}
+
+	var out syncBuffer
+	start := time.Now()
+	res, err := rt.Run(ctx, sandbox.CommandRequest{
+		Command: []string{"bash", "-c", "echo first; sleep 3; echo second"},
+		Timeout: 30 * time.Second,
+		Output:  &out,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := out.String(); got != "first\nsecond\n" {
+		t.Errorf("Output = %q, want both lines", got)
+	}
+	if res.Stdout != strings.TrimSpace(out.String()) {
+		t.Errorf("Stdout = %q, Output = %q", res.Stdout, out.String())
+	}
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if len(out.at) == 0 || out.at[0].Sub(start) > 2500*time.Millisecond {
+		t.Errorf("first line arrived %v after start; it should arrive before the 3s sleep ends", out.at[0].Sub(start))
+	}
+}
+
+func TestRuntime_ReadOnlyMounts(t *testing.T) {
+	requireDockerTests(t)
+	ctx := context.Background()
+	rt, err := New(testConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tool.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	single := filepath.Join(t.TempDir(), "profile.sh")
+	if err := os.WriteFile(single, []byte("echo from-file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := sandbox.CommandRequest{
+		Command:        []string{"bash", "-c", "cat /opt/t/tool.txt; bash /etc/profile.d/x.sh; echo changed > /opt/t/tool.txt && echo WROTE || echo DENIED"},
+		ReadOnlyMounts: map[string]string{"/opt/t": dir, "/etc/profile.d/x.sh": single},
+		Timeout:        30 * time.Second,
+	}
+	res, err := rt.Run(ctx, req)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, want := range []string{"original", "from-file", "DENIED"} {
+		if !strings.Contains(res.Stdout, want) {
+			t.Errorf("stdout lacks %q: %q (stderr %q)", want, res.Stdout, res.Stderr)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "tool.txt")); string(b) != "original" {
+		t.Errorf("host file changed: %q", b)
+	}
+
+	// Interactive sessions (logins) get the same mounts.
+	var out syncBuffer
+	err = rt.RunInteractive(ctx, sandbox.CommandRequest{
+		Command:        []string{"bash", "-c", "cat /opt/t/tool.txt"},
+		ReadOnlyMounts: map[string]string{"/opt/t": dir},
+	}, strings.NewReader(""), &out, &out)
+	if err != nil {
+		t.Fatalf("RunInteractive: %v", err)
+	}
+	if !strings.Contains(out.String(), "original") {
+		t.Errorf("interactive output = %q", out.String())
 	}
 }

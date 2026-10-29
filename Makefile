@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help test test-docker lint tidy mod upgrade image-base lint-docker
+.PHONY: help verify test test-docker lint tidy mod upgrade image-base lint-docker web-install web-lint web-test web-build web-verify tools
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -9,8 +9,10 @@ help: ## Hiển thị danh sách target
 test: ## Chạy test suite với race detector và coverage
 	go test ./... -race -cover
 
-lint: ## Kiểm tra format và chạy go vet
-	gofmt -l .
+verify: lint test web-verify ## Chạy lint và test cho Go và web (cổng kiểm tra trước khi hoàn tất)
+
+lint: ## Kiểm tra format (fail nếu có file chưa gofmt) và chạy go vet
+	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: các file trên chưa được format"; exit 1; }
 	go vet ./...
 
 tidy: ## Dọn dẹp go.mod và go.sum
@@ -35,3 +37,22 @@ image-base: ## Build aicli/base
 
 lint-docker: ## Lint the Dockerfile with BuildKit's checks
 	docker buildx build --check docker/base
+
+# ---- web/: @aicli/ui (API client + React components), pnpm ----
+web-install: ## Cài dependency của web/ (đúng lockfile, chặn script cài đặt)
+	cd web && pnpm install --frozen-lockfile --ignore-scripts
+
+web-lint: web-install ## Typecheck và eslint cho web/
+	cd web && pnpm run typecheck && pnpm run lint
+
+web-test: web-install ## Chạy test của web/
+	cd web && pnpm run test
+
+web-build: web-install ## Build web/ rồi kiểm tra dist, exports (publint, attw)
+	cd web && pnpm run build
+
+web-verify: web-lint web-test web-build ## Toàn bộ kiểm tra của web/
+
+# ---- Host-installed CLIs (package toolchain) ----
+tools: ## Build the aicli-tools command into bin/
+	go build -o bin/aicli-tools ./cmd/aicli-tools

@@ -117,6 +117,14 @@ func validateMounts(req CommandRequest) error {
 			return fmt.Errorf("sandbox: session mount source %q must be an absolute host path", host)
 		}
 	}
+	for target, host := range req.ReadOnlyMounts {
+		if !cleanAbs(target) {
+			return fmt.Errorf("sandbox: read-only mount target %q must be a clean absolute container path", target)
+		}
+		if !filepath.IsAbs(host) {
+			return fmt.Errorf("sandbox: read-only mount source %q must be an absolute host path", host)
+		}
+	}
 	for target := range req.ExtraCacheMounts {
 		if !cleanAbs(target) {
 			return fmt.Errorf("sandbox: cache mount target %q must be a clean absolute container path", target)
