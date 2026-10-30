@@ -30,11 +30,19 @@ type Handler struct {
 	// SessionTimeout caps how long one session may run (default 30 minutes), so an abandoned
 	// browser tab cannot hold a container indefinitely.
 	SessionTimeout time.Duration
-	// Banner optionally returns text shown in the terminal before the shell starts.
+	// Banner optionally returns text shown in the terminal before the shell starts (after Seed
+	// succeeded).
 	Banner func(t ticket.Ticket) string
 	// OnComplete is called after a session ends, before the exit frame is sent. Use it to
 	// persist the collected files server-side.
 	OnComplete func(t ticket.Ticket, res capture.Result)
+	// Seed, if set, returns files to place in the session HOME before the shell starts (paths
+	// relative to HOME), decided from the ticket: a session that tests a stored login. An error
+	// ends the session; its text is sent to the client, so keep it free of secrets.
+	Seed func(ctx context.Context, t ticket.Ticket) (map[string]string, error)
+	// DiscardFiles drops the collected files: the exit frame carries none and OnComplete gets
+	// none. Set it with Seed, whose files are secrets that must not travel back to the browser.
+	DiscardFiles bool
 }
 
 // ServeTerminal consumes the request's ticket for scope, upgrades to WebSocket and runs one
@@ -75,14 +83,27 @@ func (h *Handler) ServeTerminal(w http.ResponseWriter, r *http.Request, scope st
 	defer cancel()
 	conn.OnDisconnect(cancel)
 
+	// Seed first, so a banner such as "workspace prepared" is never shown for a session that
+	// could not be prepared.
+	var opts capture.RunOptions
+	if h.Seed != nil {
+		files, err := h.Seed(ctx, t)
+		if err != nil {
+			conn.SendError("%v", err)
+			return
+		}
+		opts.Files = files
+	}
 	if h.Banner != nil {
 		conn.SendStdout("%s", h.Banner(t))
 	}
-
-	res, err := h.Session.Run(ctx, conn)
+	res, err := h.Session.RunWith(ctx, conn, opts)
 	if err != nil {
 		conn.SendError("%v", err)
 		return
+	}
+	if h.DiscardFiles {
+		res.Files = nil
 	}
 	if h.OnComplete != nil {
 		h.OnComplete(t, res)

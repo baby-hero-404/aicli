@@ -1,0 +1,78 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+}
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.app header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+.app h1 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.app main {
+  display: grid;
+  grid-template-columns: 16rem 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+/* @aicli/ui ships no styles: these are the hooks it exposes. */
+.aicli-list {
+  overflow: auto;
+  padding: 0.5rem;
+  border-right: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+.aicli-list ul {
+  padding: 0;
+  list-style: none;
+}
+.aicli-list li button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0.25rem 0;
+  text-align: left;
+}
+.aicli-list li button[aria-current="true"] {
+  outline: 2px solid currentColor;
+}
+.aicli-conversation {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0.5rem 1rem;
+}
+.aicli-messages {
+  flex: 1;
+  overflow: auto;
+}
+.aicli-author {
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+.aicli-user,
+.aicli-assistant {
+  white-space: pre-wrap;
+  margin: 0.5rem 0;
+}
+.aicli-tool {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+.aicli-tool[data-error="true"],
+.aicli-error,
+.aicli-failure {
+  color: #c0392b;
+}

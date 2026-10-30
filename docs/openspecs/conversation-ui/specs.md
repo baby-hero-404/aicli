@@ -219,7 +219,7 @@ Paths below are relative to the host's mount prefix for `httpapi.Handler`. "Auth
 - Every read, send, cancel, export, list and stream is authorized; the zero-value `Authorizer` denies.
 - No credential or token ever appears in a URL.
 - A conversation's history remains readable and exportable regardless of its `resumable` state.
-- Nothing from the host user's HOME is mounted (existing rule; `Resolver` output passes through the existing mount policy).
+- Nothing from the host user's HOME is mounted. `sandbox.ValidateRequest` rejects a mount source that is that HOME or a directory above it, so a `Resolver` mistake fails the turn instead of exposing it.
 
 ## Rules
 

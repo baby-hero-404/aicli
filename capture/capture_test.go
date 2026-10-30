@@ -143,3 +143,61 @@ func TestCollectFiles_Bounds(t *testing.T) {
 		t.Errorf("collected %d files, want exactly the limit %d", len(files), MaxFiles)
 	}
 }
+
+func TestSession_SeedsFilesBeforeTheShellStarts(t *testing.T) {
+	var seen map[string]string
+	rt := &fakeRuntime{onRun: func(req sandbox.CommandRequest) error {
+		seen = map[string]string{}
+		return filepath.WalkDir(req.Workspace, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, _ := os.ReadFile(p)
+			rel, _ := filepath.Rel(req.Workspace, p)
+			seen[filepath.ToSlash(rel)] = string(b)
+			return nil
+		})
+	}}
+	s := &Session{Runtime: rt}
+	_, err := s.RunWith(context.Background(), &fakeTerm{}, RunOptions{Files: map[string]string{
+		".claude/.credentials.json": `{"t":1}`, ".config/x/y.json": "y",
+	}})
+	if err != nil {
+		t.Fatalf("RunWith: %v", err)
+	}
+	if seen[".claude/.credentials.json"] != `{"t":1}` || seen[".config/x/y.json"] != "y" || len(seen) != 2 {
+		t.Errorf("the shell saw %v", seen)
+	}
+}
+
+func TestSession_RefusesUnsafeSeedFiles(t *testing.T) {
+	big := strings.Repeat("x", MaxFileBytes+1)
+	many := map[string]string{}
+	for i := 0; i <= MaxFiles; i++ {
+		many[fmt.Sprintf("f%d", i)] = "x"
+	}
+	for name, files := range map[string]map[string]string{
+		"traversal":          {"../escape": "x"},
+		"deep traversal":     {"a/../../escape": "x"},
+		"absolute":           {"/etc/cron.d/x": "x"},
+		"empty path":         {"": "x"},
+		"the workspace":      {".": "x"},
+		"one file too large": {"big": big},
+		"too many files":     many,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt := &fakeRuntime{}
+			_, err := (&Session{Runtime: rt}).RunWith(context.Background(), &fakeTerm{}, RunOptions{Files: files})
+			if err == nil {
+				t.Fatal("unsafe seed accepted")
+			}
+			if rt.got.Command != nil {
+				t.Error("the shell must not start when seeding fails")
+			}
+		})
+	}
+	// nothing may have been written outside the workspace
+	if _, err := os.Stat(filepath.Join(os.TempDir(), "aicli-capture", "escape")); err == nil {
+		t.Error("a seed file escaped the workspace")
+	}
+}

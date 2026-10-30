@@ -374,7 +374,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("run: sandbox run failed: %w", err)
 	}
-	res := classify(req, out, quoted)
+	res := classify(req, out, quoted, sink != nil && sink.completed)
 	if sink != nil {
 		res.SessionID = sink.sessionID
 		res.SkippedLines = sink.skipped + lines.Dropped()
@@ -382,21 +382,30 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	return res, nil
 }
 
-func classify(req Request, out *sandbox.CommandResult, quotedCommand string) *Result {
+// classify works out how a run ended. streamCompleted means the CLI's event stream reported a
+// successful turn: with a clean exit as well, the output is the assistant's own text and tool
+// output (a reply about HTTP 429 or "401 Unauthorized"), so the failure signatures are not
+// searched for in it.
+func classify(req Request, out *sandbox.CommandResult, quotedCommand string, streamCompleted bool) *Result {
 	combined, files := extractCaptured(joinOutput(out.Stdout, out.Stderr))
 	telemetry, telemetryOK := ParseTelemetry(combined)
 
 	killed := DetectLoop(combined) || out.Killed
 	idle := out.Killed && out.KillReason == sandbox.KillReasonIdleTimeout
-	confidence := rules.DetectAuthInvalid(req.Profile, combined)
+	cleanSuccess := streamCompleted && out.ExitCode == 0 && !out.Killed
+	var confidence rules.AuthInvalidConfidence
+	var quota bool
+	var cooldown time.Duration
+	if !cleanSuccess {
+		confidence = rules.DetectAuthInvalid(req.Profile, combined)
+		// Auth failure is permanent while quota is transient, so it wins when both match: a
+		// quota cooldown must not mask a credential that will never work.
+		if confidence == rules.AuthInvalidNone {
+			quota, cooldown = rules.DetectQuotaExceeded(req.Profile, combined, out.ExitCode)
+		}
+	}
 	authInvalid := confidence != rules.AuthInvalidNone
 	confirmed := confidence == rules.AuthInvalidConfirmed
-	// Auth failure is permanent while quota is transient, so it wins when both match: a quota
-	// cooldown must not mask a credential that will never work.
-	quota, cooldown := rules.DetectQuotaExceeded(req.Profile, combined, out.ExitCode)
-	if authInvalid {
-		quota, cooldown = false, 0
-	}
 	// Checked regardless of exit code: some CLIs print a question and exit 0.
 	awaiting := !killed && !authInvalid && rules.DetectAwaitingInput(lastNonEmptyLine(combined))
 

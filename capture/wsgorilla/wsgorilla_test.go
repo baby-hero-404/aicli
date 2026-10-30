@@ -3,6 +3,7 @@ package wsgorilla
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -285,5 +286,73 @@ func TestServeTerminal_MisconfiguredHandler(t *testing.T) {
 				t.Errorf("status = %d, want 500 instead of a panic", w.Code)
 			}
 		})
+	}
+}
+
+// A session that tests a stored login: the login goes in from the ticket and must not come back.
+func TestServeTerminal_SeedGoesInAndIsNotReturned(t *testing.T) {
+	var gotTicket ticket.Ticket
+	var completed capture.Result
+	srv, _, store, rt := newServer(t, func(h *Handler) {
+		h.Seed = func(_ context.Context, tk ticket.Ticket) (map[string]string, error) {
+			gotTicket = tk
+			return map[string]string{".claude/.credentials.json": "SECRET-TOKEN"}, nil
+		}
+		h.DiscardFiles = true
+		h.OnComplete = func(_ ticket.Ticket, res capture.Result) { completed = res }
+	})
+	token, _ := store.Mint(context.Background(), ticket.Ticket{Subject: "u1", Scope: "org-1", Value: "cred-9"})
+	conn, _, err := dial(t, srv, token, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.WriteMessage(websocket.TextMessage, []byte("login\n"))
+	_ = rt
+
+	var raw []string
+	var exit map[string]any
+	for exit == nil {
+		var frame map[string]any
+		if err := conn.ReadJSON(&frame); err != nil {
+			t.Fatalf("read frame: %v", err)
+		}
+		b, _ := json.Marshal(frame)
+		raw = append(raw, string(b))
+		if frame["type"] == "exit" {
+			exit = frame
+		}
+	}
+	if gotTicket.Value != "cred-9" {
+		t.Errorf("Seed got ticket %+v", gotTicket)
+	}
+	if _, has := exit["payload"]; has {
+		t.Errorf("exit frame carries a payload: %v", exit)
+	}
+	if strings.Contains(strings.Join(raw, "\n"), "SECRET-TOKEN") || len(completed.Files) != 0 {
+		t.Errorf("the seeded secret came back: frames=%v completed=%v", raw, completed.Files)
+	}
+}
+
+func TestServeTerminal_SeedErrorEndsTheSession(t *testing.T) {
+	srv, _, store, _ := newServer(t, func(h *Handler) {
+		h.Seed = func(context.Context, ticket.Ticket) (map[string]string, error) {
+			return nil, errors.New("credential not found")
+		}
+	})
+	token, _ := store.Mint(context.Background(), ticket.Ticket{Subject: "u1", Scope: "org-1", Value: "x"})
+	conn, _, err := dial(t, srv, token, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var frame map[string]any
+	if err := conn.ReadJSON(&frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame["type"] != "error" || !strings.Contains(frame["message"].(string), "credential not found") {
+		t.Errorf("frame = %v", frame)
 	}
 }

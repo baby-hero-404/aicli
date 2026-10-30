@@ -35,7 +35,7 @@
 ## Phase 3: Admin command
 **Files:** `cmd/aicli-tools/main.go`
 **Changes:**
-- [x] `install <tool> [version|latest] [--use]`, `use <tool> <version>`, `list`, `remove <tool> <version>`; `--root`, `--image`
+- [x] `install <tool> [version|latest] [--no-use]` (makes the version current unless `--no-use`; `--use` is accepted and a no-op), `setup` (all tools, latest), `use <tool> <version>`, `reset <tool>`, `list`, `remove <tool> <version>`; `--root`, `--image`; the default root is `$AICLI_TOOLS_ROOT`, else `~/.aicli/tools` (servers use `--root /var/lib/aicli/tools`)
 **Verify:**
 - [x] Real run on this machine: install all three latest, use, list, run a CLI through the wrapper
 

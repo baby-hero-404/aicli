@@ -134,7 +134,7 @@ Scope: the `antigravity` and `antigravity_notools` profiles only. Every phase en
 
 **Verify:**
 - [x] Every Scenario and Failure Scenario in specs.md that the service owns has a table-driven test using sandboxmock and memstore
-- [ ] A `Resolver` output that mounts HOME is rejected by the existing policy (enforced by `sandbox.ValidateRequest` in the docker runtime; needs a test through `Service` once a policy-enforcing runtime is available in tests)
+- [x] A `Resolver` output that mounts HOME is rejected: the existing policy did not do this, so `sandbox.ValidateRequest` now rejects a mount source that is HOME or one of its ancestors. Covered in `sandbox` (`TestValidateMounts_RejectsHostHome`) and through `Service` (`TestResolverMountingHostHomeIsRejected`, with a runtime that applies `ValidateRequest`). Not caught: a source that is a subdirectory of HOME holding secrets, such as `~/.ssh`.
 - [x] Handover race: a test hook pauses Subscribe between broker registration and `ListEvents` while the publisher appends events. The subscriber receives every seq exactly once and in order. Run it 200 times under `-race`.
 - [x] A slow subscriber whose buffer overflows still receives a gap-free sequence (the catch-up comes from the store), and the publisher never blocks
 - [x] Cross-instance cancel: two `Service` instances share one memstore. Cancelling from B stops the turn running on A within `CancelPoll` plus a margin, and the turn ends `cancelled`.
@@ -142,8 +142,8 @@ Scope: the `antigravity` and `antigravity_notools` profiles only. Every phase en
 
 ### Deferred from Phase 2 (tracked, not forgotten)
 
-- [ ] OpenTelemetry metrics and the `conversation.send` span (design.md → Observability). Audit logging through `slog` is done; metrics need a decision on the meter wiring first.
-- [ ] Per-principal active-turn limit is per instance (in memory). Fine for MVP; a store-backed count is needed for a hard global limit.
+- [ ] _Deferred (agreed):_ OpenTelemetry metrics and the `conversation.send` span (design.md → Observability). Audit logging through `slog` is done; metrics need a decision on the meter wiring first.
+- [ ] _Deferred (agreed):_ Per-principal active-turn limit is per instance (in memory). Fine for MVP; a store-backed count is needed for a hard global limit.
 - [ ] Manual gate: resume in a fresh container (Phase 1).
 
 
@@ -239,7 +239,7 @@ Scope: the `antigravity` and `antigravity_notools` profiles only. Every phase en
 **Changes:**
 - [x] `tsdown.config.ts`: unbundled ESM output plus `.d.ts`, with entries `src/client/index.ts` and `src/react/index.ts`, and `react` external
 - [x] `web-install` (`pnpm --dir web install --frozen-lockfile`), `web-lint` (`tsc --noEmit` + eslint), `web-test` (vitest), `web-build` (tsdown, then publint and attw); `verify` includes all of them
-- [ ] _Deferred:_ a Vite + React example in `examples/web`. The two real consumers in Phase 5 are the better proof, and it would add `vite` and `@vitejs/plugin-react`. The integration guide has the Next.js-style snippet.
+- [x] A Vite + React example in `examples/web` (own lockfile and the same pnpm settings; `@aicli/ui` linked by path; `vite@8.3.5`, `@vitejs/plugin-react@6.1.2`, checked against the registry and the 7-day rule). `make web-example` builds it and is part of `make verify`. Not run against a live server (needs Docker and an agy login).
 
 **Verify:**
 - [x] `make verify` is green on a clean checkout
@@ -255,14 +255,26 @@ Scope: the `antigravity` and `antigravity_notools` profiles only. Every phase en
 
 **Why:** The success criterion is reuse without forking.
 
-**Changes:**
-- [ ] Bearer + chi consumer: `Authenticate` from its existing auth middleware, a `Store` on its DB, `getHeaders` in the client
-- [ ] Cookie + gin consumer: switch its CLI execution to `run.Runner` with a sandbox runtime, extend its architecture-test allowlist, use `credentials: "include"`
-- [ ] Depend on `@aicli/ui` by path: `link:` for the pnpm consumer, `file:` for the npm consumer
-- [ ] Feed back API friction into this spec before tagging a release
+**Done in a trial (uncommitted in the consumers' working trees):**
+- [x] Bearer + chi consumer: `Authenticate` from its bearer middleware, a database-backed `Store` (a new numbered migration), a `Resolver` on the organization's provider credential, the API mounted at `/organizations/{orgID}/chat/*` (admin only), a `/chat` page.
+- [x] Cookie + gin consumer: `Authenticate` from its session cookie, a database-backed `Store` (a new numbered migration), a `Resolver` on the stored CLI login (a credential lease with write-back of a refreshed token), the API mounted at `/v1/chat/*` (operators only), its architecture test extended to allow aicli in the one package that wires it, a `/chat` page.
+- [x] `@aicli/ui` installed by path as a copy: `file:` (pnpm) and `npm install --install-links file:` (npm). `link:` and plain npm `file:` break React (see friction).
+- [x] Outdated CLI code in the consumers cleaned up: the bearer consumer replaced its copies of the ticket store, websocket terminal and PTY glue with `capture/ticket`, `capture.Session` and `capture/wsgorilla`, and derives CLI state directories from `profile.StateDirs` (its own table had codex wrong). Not replaced: its code-step runner (a partial reimplementation of `run.Runner`, entangled with MCP and logging: a separate migration) and the cookie consumer's host-side login manager and redaction (different behavior on purpose).
 
-**Verify:**
-- [ ] Both consumers create, stream, reload mid-turn (replay works), resume and export, with no copied UI code
+**Verify (done):**
+- [x] `storetest.Run` passes on both Postgres stores (13 tests, including concurrent claim and gap-free append).
+- [x] Through each consumer's real router and a real `http.Server` with a short `WriteTimeout`: auth and roles are enforced, a foreign Origin is refused, create, send and stream work, the stream outlives the timeout, the sandbox receives the stored credential and a refreshed token is stored back.
+- [x] Each real binary run once with its real migrations and the real Docker sandbox: the turn ran agy and ended `auth_invalid` (no login was available).
+- [ ] **Not done:** a turn that answers, resume and export against a logged-in agy; the browser UI in a real browser; both consumers' own `make verify`/CI; committing and releasing them. All need an agy login or a decision on release order.
+
+**Friction fed back (all addressed in this repo unless noted):**
+- [x] `capture.Session` could not test a stored login (no files in HOME first) and `wsgorilla` returned everything in the workspace, credential included: added `RunOptions.Files`, `Handler.Seed` and `Handler.DiscardFiles`.
+- [x] Two copies of React with `link:`/symlinked installs: documented.
+- [x] The same-origin default fails behind a Host-rewriting proxy, and `AllowNoOrigin` is needed for bearer-token scripts: documented.
+- [x] A router-wide request timeout ends the event stream: documented.
+- [ ] Both consumers wrote the same ~330-line SQL `Store`. A reference `conversation/pgstore` on `database/sql` would remove that; its own tests need a Postgres driver, i.e. a new Go dependency, so it waits for approval.
+- [ ] Neither consumer can merge before aicli is tagged: their `go.mod`, `go.sum` and `vendor/` still point at v0.1.2, and `go.work` is local.
+- [ ] A logged-out agy took about a minute to give up in the sandbox in one run (not timed in the other): the UI shows nothing meanwhile.
 
 ## Phase 6: Documentation sync
 

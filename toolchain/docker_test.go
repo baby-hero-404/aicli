@@ -14,7 +14,7 @@ import (
 
 // TestDockerMountedTools needs Docker and an already populated tools root:
 //
-//	aicli-tools --root DIR install agy latest --use   (and claude, codex)
+//	aicli-tools --root DIR setup
 //	AICLI_DOCKER_TESTS=1 AICLI_TOOLS_ROOT=DIR go test ./toolchain -run Docker
 func TestDockerMountedTools(t *testing.T) {
 	root := os.Getenv("AICLI_TOOLS_ROOT")

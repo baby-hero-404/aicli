@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,11 +27,46 @@ export PATH
 // Store manages installed tool versions under a root directory on the host.
 type Store struct {
 	root string
+	mu   sync.Mutex // serializes the small state files (current, previous, auto, bad) in this process
 }
 
-// Open returns the store at root, creating the directory layout if needed. root must be an
-// absolute path visible to the container runtime.
+// DefaultRoot returns the default tools directory on the host: $AICLI_TOOLS_ROOT when set,
+// otherwise ~/.aicli/tools. Servers should set AICLI_TOOLS_ROOT (or pass --root) to a system
+// path such as /var/lib/aicli/tools.
+//
+// A default inside HOME is fine for the sandbox rule: only the per-version directory of each tool
+// is mounted, read-only, never HOME itself (see sandbox.ValidateRequest). With neither the
+// variable nor a HOME it returns an error rather than guessing a path.
+func DefaultRoot() (string, error) {
+	if env := os.Getenv("AICLI_TOOLS_ROOT"); env != "" {
+		root, err := filepath.Abs(filepath.Clean(env))
+		if err != nil {
+			return "", fmt.Errorf("toolchain: AICLI_TOOLS_ROOT %q: %w", env, err)
+		}
+		return root, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", errors.New("toolchain: no tools root: set AICLI_TOOLS_ROOT (or pass --root) when HOME is not known")
+	}
+	return filepath.Join(home, ".aicli", "tools"), nil
+}
+
+// OpenDefault opens the store at DefaultRoot().
+func OpenDefault() (*Store, error) {
+	return Open("")
+}
+
+// Open returns the store at root, creating the directory layout if needed. If root is empty,
+// DefaultRoot() is used. root must be an absolute path visible to the container runtime.
 func Open(root string) (*Store, error) {
+	if root == "" {
+		var err error
+		root, err = DefaultRoot()
+		if err != nil {
+			return nil, fmt.Errorf("toolchain: default root: %w", err)
+		}
+	}
 	if !filepath.IsAbs(root) {
 		return nil, fmt.Errorf("toolchain: root %q must be an absolute path", root)
 	}
@@ -89,7 +126,7 @@ func (s *Store) Versions(name string) ([]string, error) {
 			out = append(out, e.Name())
 		}
 	}
-	slices.Sort(out)
+	slices.SortFunc(out, compareVersions)
 	return out, nil
 }
 
@@ -122,7 +159,12 @@ func (s *Store) Use(name, version string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s@%s", ErrNotInstalled, name, version)
 	}
-	return writeAtomic(filepath.Join(s.root, name, "current"), []byte(version+"\n"), 0o644)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A version the operator chooses is trusted: it is not on probation, so failures never roll it
+	// back, even when it is the very release Sync had switched to.
+	s.clearProbation(name)
+	return s.switchTo(name, version, true)
 }
 
 // Unuse clears the tool's current version, so runs fall back to the CLI baked into the
@@ -131,6 +173,9 @@ func (s *Store) Unuse(name string) error {
 	if _, err := lookup(name); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearProbation(name)
 	err := os.Remove(filepath.Join(s.root, name, "current"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("toolchain: clear current: %w", err)
@@ -186,6 +231,120 @@ func (s *Store) PruneStaging(olderThan time.Duration, now time.Time) (int, error
 		n++
 	}
 	return n, nil
+}
+
+// DefaultKeepVersions is the default number of recent versions to keep during prune.
+const DefaultKeepVersions = 3
+
+// compareVersions orders version strings such as "1.4.10", "1.4.2" or "2.0.0-rc.1": the dotted
+// numbers before any "-" compare numerically segment by segment, a pre-release ("-rc.1") sorts
+// before its release, and build metadata after "+" is ignored.
+func compareVersions(a, b string) int {
+	coreA, preA := splitVersion(a)
+	coreB, preB := splitVersion(b)
+	if c := compareDotted(coreA, coreB); c != 0 {
+		return c
+	}
+	switch {
+	case preA == preB:
+		return 0
+	case preA == "":
+		return 1
+	case preB == "":
+		return -1
+	}
+	return compareDotted(preA, preB)
+}
+
+func splitVersion(v string) (core, pre string) {
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i]
+	}
+	core, pre, _ = strings.Cut(v, "-")
+	return core, pre
+}
+
+// compareDotted compares "a.b.c" strings: numeric segments numerically, others as text, and a
+// shorter string before a longer one it is a prefix of.
+func compareDotted(a, b string) int {
+	partsA, partsB := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(partsA) && i < len(partsB); i++ {
+		pa, pb := partsA[i], partsB[i]
+		na, errA := strconv.Atoi(pa)
+		nb, errB := strconv.Atoi(pb)
+		switch {
+		case errA == nil && errB == nil && na != nb:
+			if na < nb {
+				return -1
+			}
+			return 1
+		case (errA != nil || errB != nil) && pa != pb:
+			if pa < pb {
+				return -1
+			}
+			return 1
+		}
+	}
+	return len(partsA) - len(partsB)
+}
+
+// Prune removes installed versions of tool name older than the keep most recent versions.
+// The active (current) version and the previous one (see Rollback) are never removed. If keep <= 0, DefaultKeepVersions (3) is used.
+// It returns the list of versions that were removed.
+func (s *Store) Prune(name string, keep int) ([]string, error) {
+	return s.PruneKeeping(name, keep, nil)
+}
+
+// PruneKeeping is Prune that also keeps every version protect reports as still needed, for example
+// a version some requests pin (sandbox.CommandRequest.ToolVersions), which the store cannot see.
+func (s *Store) PruneKeeping(name string, keep int, protect func(version string) bool) ([]string, error) {
+	if keep <= 0 {
+		keep = DefaultKeepVersions
+	}
+	versions, err := s.Versions(name)
+	if err != nil {
+		return nil, err
+	}
+	if len(versions) <= keep {
+		return nil, nil
+	}
+	slices.SortFunc(versions, compareVersions)
+
+	cur, err := s.Current(name)
+	if err != nil {
+		return nil, err
+	}
+	prev, _, err := s.Previous(name) // the version a rollback goes back to must survive
+	if err != nil {
+		return nil, err
+	}
+
+	var removed []string
+	for _, v := range versions[:len(versions)-keep] {
+		if v == cur || v == prev || (protect != nil && protect(v)) {
+			continue // the active version, the one to roll back to, and any in use, must not be removed
+		}
+		if err := s.Remove(name, v); err != nil {
+			return removed, err
+		}
+		removed = append(removed, v)
+	}
+	return removed, nil
+}
+
+// PruneAll prunes all registered tools, keeping at most keep versions each.
+func (s *Store) PruneAll(keep int) (map[string][]string, error) {
+	res := make(map[string][]string)
+	for _, tool := range Tools() {
+		removed, err := s.Prune(tool, keep)
+		if err != nil {
+			return res, fmt.Errorf("prune %s: %w", tool, err)
+		}
+		if len(removed) > 0 {
+			res[tool] = removed
+		}
+	}
+	return res, nil
 }
 
 // Resolve returns the host directory to mount for each tool: the pinned version when pins names

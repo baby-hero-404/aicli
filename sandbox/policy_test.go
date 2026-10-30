@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -51,6 +53,44 @@ func TestValidateExecutionPolicy(t *testing.T) {
 			err := validateExecutionPolicy(tc.req, tc.resolved)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("validateExecutionPolicy() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMounts_RejectsHostHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	link := filepath.Join(t.TempDir(), "home-link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	inside := filepath.Join(home, "data", "sessions", "a")
+
+	tests := []struct {
+		name    string
+		req     CommandRequest
+		wantErr bool
+	}{
+		{"session mount of HOME", CommandRequest{SessionMounts: map[string]string{"/home/agent/.x": home}}, true},
+		{"session mount of an ancestor of HOME", CommandRequest{SessionMounts: map[string]string{"/home/agent/.x": filepath.Dir(home)}}, true},
+		{"session mount of /", CommandRequest{SessionMounts: map[string]string{"/home/agent/.x": "/"}}, true},
+		{"session mount through a symlink to HOME", CommandRequest{SessionMounts: map[string]string{"/home/agent/.x": link}}, true},
+		{"workspace is HOME", CommandRequest{Workspace: home}, true},
+		{"read-only mount of HOME", CommandRequest{ReadOnlyMounts: map[string]string{"/opt/x": home}}, true},
+		{"cache mount of HOME", CommandRequest{ExtraCacheMounts: map[string]string{"/cache": home}}, true},
+		{"logs dir is HOME", CommandRequest{LogsHostDir: home}, true},
+		{"directory inside HOME is fine", CommandRequest{Workspace: inside, SessionMounts: map[string]string{"/home/agent/.x": inside}}, false},
+		{"unrelated directory is fine", CommandRequest{SessionMounts: map[string]string{"/home/agent/.x": "/var/lib/sessions/a"}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRequest(CommandRequest{
+				Command: []string{"true"}, Workspace: tt.req.Workspace, LogsHostDir: tt.req.LogsHostDir,
+				SessionMounts: tt.req.SessionMounts, ReadOnlyMounts: tt.req.ReadOnlyMounts, ExtraCacheMounts: tt.req.ExtraCacheMounts,
+			}, NetworkModeNone)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

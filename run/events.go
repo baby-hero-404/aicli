@@ -42,6 +42,9 @@ type eventSink struct {
 	text      strings.Builder
 	skipped   int
 	sessionID string
+	// completed is true once the CLI itself reported a successful turn. The transcript then
+	// holds the assistant's own words, which must not be mistaken for a failure message.
+	completed bool
 
 	// expected is the session the run was asked to resume ("" for a new one). If the CLI
 	// reports a different one, mismatch is set, onMismatch is called once, and every later
@@ -95,6 +98,9 @@ func (s *eventSink) push(ev stream.Event) {
 		s.sessionID = ev.SessionID
 	}
 	ev.SessionID = ""
+	if ev.Kind == stream.KindTurnCompleted {
+		s.completed = true
+	}
 	if ev.Kind == stream.KindAssistantText {
 		s.text.WriteString(ev.Text)
 		s.sendCompleteLines()

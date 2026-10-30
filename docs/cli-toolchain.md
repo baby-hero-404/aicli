@@ -19,9 +19,13 @@ Three steps, the same for every host:
 
 ```go
 docker, _ := dockerrt.New(dockerrt.Config{})
-store, err := toolchain.Open("/srv/aicli-tools")   // absolute path the Docker daemon can see
+var rt sandbox.Runtime
+rt, err := toolchain.WrapDefault(docker)            // root: $AICLI_TOOLS_ROOT, else ~/.aicli/tools
 if err != nil { /* ... */ }
-var rt sandbox.Runtime = toolchain.Wrap(docker, store)
+
+// Or specify a custom root path (e.g. on shared storage):
+// store, _ := toolchain.Open("/srv/aicli-tools")
+// rt = toolchain.Wrap(docker, store)
 
 // Use rt everywhere a runtime is passed today:
 runner := &run.Runner{Runtime: rt}                  // runs and Preflight
@@ -33,17 +37,25 @@ With `sandbox.Manager` (runtime detection, caches), wrap the Docker runtime firs
 result to the Manager. The other order works too; both only add to the request.
 
 ```go
-mgr := sandbox.NewManager(toolchain.Wrap(docker, store), registry, sandbox.WithCacheRoot("/var/cache/aicli"))
+rt, _ := toolchain.WrapDefault(docker)
+mgr := sandbox.NewManager(rt, registry, sandbox.WithCacheRoot("/var/cache/aicli"))
 ```
 
-**2. Provision the tools root** where the service runs (a deploy step, an init container, or a
-cron job), with the same image your sandboxes use:
+**2. Provision the tools root** with the same image your sandboxes use (a deploy step, an init
+container, or a cron job). The root is `--root`, else `$AICLI_TOOLS_ROOT`, else
+`~/.aicli/tools`, which needs no setup on a development machine. **On a server use a system
+path**, either `--root /var/lib/aicli/tools` or `export AICLI_TOOLS_ROOT=/var/lib/aicli/tools`
+(create it once, writable by the user that runs `aicli-tools`). The default inside HOME is safe for
+the sandbox rule: only the per-version directory of each tool is mounted, read-only, never HOME
+itself, and `sandbox.ValidateRequest` rejects a mount of HOME or of a directory above it.
 
 ```bash
-aicli-tools --root /srv/aicli-tools --image aicli/base:latest install agy latest --use
-aicli-tools --root /srv/aicli-tools --image aicli/base:latest install claude latest --use
-aicli-tools --root /srv/aicli-tools --image aicli/base:latest install codex latest --use
-aicli-tools --root /srv/aicli-tools list
+# One-command setup for all tools (agy, claude, codex at latest version):
+aicli-tools setup
+
+# Or install individual tools (defaults to latest and makes it current):
+aicli-tools install agy
+aicli-tools list
 ```
 
 If the service runs on several machines, `<root>` must be shared storage (or provisioned the same
@@ -52,15 +64,35 @@ area is inside `<root>`, and two hosts installing the same version at once is ha
 host that runs `aicli-tools` must use the same uid, and it is simplest to install from one place
 (a deploy job) only. Leftovers of killed installs are cleaned up after 24 hours.
 
-**3. Upgrade, canary and roll back** without touching the service:
+`install` makes the installed version current. To install without switching (a canary), pass
+`--no-use`; the old `--use` flag is still accepted and does nothing extra.
+
+**3. Upgrade, prune, and roll back** without touching the service:
 
 ```bash
-aicli-tools --root /srv/aicli-tools install agy latest     # install only; nothing changes yet
-aicli-tools --root /srv/aicli-tools use agy 1.4.11          # switch: the next run uses it
-aicli-tools --root /srv/aicli-tools use agy 1.4.10          # roll back
-aicli-tools --root /srv/aicli-tools reset agy               # back to the CLI baked in the image
-aicli-tools --root /srv/aicli-tools remove agy 1.4.9        # clean up (not allowed for current)
+aicli-tools setup                           # checks & upgrades all tools, keeping the 3 most recent
+aicli-tools setup --keep 2                  # keep only the 2 most recent versions
+aicli-tools prune                           # clean up old versions, keeping top 3 (active is never deleted)
+aicli-tools prune --keep 1 claude           # keep only 1 version of claude
+aicli-tools install agy --no-use            # install only; does not switch current yet
+aicli-tools use agy 1.4.11                  # switch: the next run uses it
+aicli-tools use agy 1.4.10                  # roll back
+aicli-tools reset agy                       # back to the CLI baked in the image
+aicli-tools remove agy 1.4.9                # delete a specific version (not allowed for current)
 ```
+
+**Automate with a daily cron job:**
+
+To keep your servers automatically up to date and clean of old versions without manual intervention,
+add a daily cron job on the host (e.g., at 03:00):
+
+```bash
+# Crontab: checks daily, installs latest versions, and prunes older than 3 versions
+0 3 * * * aicli-tools setup
+```
+
+Because `setup` is idempotent, if no new version has been released, it completes in ~2 seconds
+with zero disk writes.
 
 agy publishes a checksum only for its latest release, so a new agy version can only be installed
 while it is the latest; keep the previous one installed until the new one has proven itself, so
@@ -80,7 +112,27 @@ fallback). A tool with no `current` is not mounted, so the CLI baked into the im
 can migrate one tool at a time, and nothing breaks before the root is provisioned.
 
 The same operations exist in Go (`toolchain.Installer.Install`, `Store.Use`, `Store.Unuse`,
-`Store.Remove`, `Store.Versions`) for hosts that want an admin endpoint instead of the command.
+`Store.Remove`, `Store.Prune`, `Store.PruneKeeping`, `Store.Versions`). To automate upgrades and
+garbage collection without cron, call `toolchain.Sync` or run it from the background `janitor`
+(see the README). `Sync` installs the newest release of each tool that is missing, makes it
+current and prunes old versions (default: keep 3, never the current or the previous one, never one
+`SyncOptions.Protected` names). One tool failing does not stop the others.
+
+**Automatic rollback.** The release `Sync` switched to is on probation (24 hours by default).
+`Wrap`ped runtimes watch the runs: three failures in a row where the tool itself could not run or
+crashed (exit 126, 127, 132 or 139; 134 and 137 are not counted, because a big task running out of memory ends that way) roll it back to the previous version at once, mark it bad
+(`<root>/<tool>/bad.json`) and call `Runtime.OnRollback`; a success in between resets the count.
+`Sync` never makes a bad version current again, and tries the next newer release as usual. Rolling back to a version that is itself marked bad is refused (`ErrBadVersion`). `aicli-tools unbad <tool> <version>` (`Store.ClearBad`) lifts a mark placed by mistake; it does not switch, so `use` the version afterwards. The
+previous version is recorded in `<root>/<tool>/previous` (an empty value means the CLI in the
+image), the probation in `auto.json`. For failures only your host can see, call
+`Store.ReportOutcome(tool, version, ok, reason, cfg)`; for a last test before the switch set
+`SyncOptions.Check`; to rollback by hand run `aicli-tools rollback <tool>`.
+
+**What it will not do.** It does not undo your choices: a release is switched to only on first
+setup or when current is the newest good version installed, so a `use` of an older version, a
+`reset` or an earlier rollback stays until you act. It cannot know about failures that look like
+ordinary task failures (a wrong answer, a quota, a login); those are not held against a release.
+A tool is matched by name in the command line, so in a chain such as `claude ... && npm test` the 126/127 of `npm` can be charged to claude; it takes three in a row within the probation. A version you switch to yourself (`use`, `install`, `setup`, `reset`) is trusted: it ends the probation and is never rolled back automatically. `SyncOptions.InstallOnly` turns the switching off.
 
 ## How it works and why it is safe
 

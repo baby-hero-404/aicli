@@ -84,8 +84,12 @@ func (c *Conn) SendError(format string, args ...any) {
 	_ = c.sendJSON(map[string]any{"type": "error", "message": fmt.Sprintf(format, args...)})
 }
 
-// SendExit tells the client the session ended and hands over the collected files.
+// SendExit tells the client the session ended and hands over the collected files. A nil map sends
+// an exit frame without a payload.
 func (c *Conn) SendExit(files map[string]string) error {
+	if files == nil {
+		return c.sendJSON(map[string]any{"type": "exit"})
+	}
 	return c.sendJSON(map[string]any{"type": "exit", "payload": files})
 }
 

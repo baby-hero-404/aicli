@@ -12,7 +12,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/baby-hero-404/aicli/sandbox"
 )
@@ -61,9 +63,24 @@ type Result struct {
 	Files map[string]string
 }
 
+// RunOptions adjusts one session.
+type RunOptions struct {
+	// Files are written into the session HOME (the workspace) before the shell starts, for a
+	// session that tests a stored login instead of creating one. Keys are paths relative to HOME;
+	// the count and sizes are bounded like the files a session hands back, and a path that is
+	// absolute or climbs out with ".." is refused. Seeded files are part of what the session
+	// returns unless the caller drops them (wsgorilla.Handler.DiscardFiles).
+	Files map[string]string
+}
+
 // Run executes one session: it creates a fresh workspace, runs the shell attached to term,
 // and returns the regular files left in the workspace. The workspace is always removed.
 func (s *Session) Run(ctx context.Context, term Terminal) (Result, error) {
+	return s.RunWith(ctx, term, RunOptions{})
+}
+
+// RunWith is Run with options.
+func (s *Session) RunWith(ctx context.Context, term Terminal, opts RunOptions) (Result, error) {
 	if s.Runtime == nil {
 		return Result{}, errors.New("capture: Session.Runtime is required")
 	}
@@ -80,6 +97,9 @@ func (s *Session) Run(ctx context.Context, term Terminal) (Result, error) {
 		return Result{}, fmt.Errorf("capture: create workspace: %w", err)
 	}
 	defer os.RemoveAll(dir)
+	if err := seedFiles(dir, opts.Files); err != nil {
+		return Result{}, err
+	}
 
 	command := s.Command
 	if len(command) == 0 {
@@ -143,6 +163,34 @@ func collectFiles(root string) (map[string]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+// seedFiles writes files below dir, refusing anything that could land outside it.
+func seedFiles(dir string, files map[string]string) error {
+	if len(files) > MaxFiles {
+		return fmt.Errorf("capture: %d seed files, the limit is %d", len(files), MaxFiles)
+	}
+	var total int
+	for rel, content := range files {
+		clean := path.Clean(rel)
+		if rel == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || clean == "." {
+			return fmt.Errorf("capture: seed file path %q must stay inside HOME", rel)
+		}
+		if len(content) > MaxFileBytes {
+			return fmt.Errorf("capture: seed file %q is larger than %d bytes", rel, MaxFileBytes)
+		}
+		if total += len(content); total > MaxTotalBytes {
+			return fmt.Errorf("capture: seed files are larger than %d bytes in all", MaxTotalBytes)
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(clean))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return fmt.Errorf("capture: seed %q: %w", rel, err)
+		}
+		if err := os.WriteFile(dst, []byte(content), 0o600); err != nil {
+			return fmt.Errorf("capture: seed %q: %w", rel, err)
+		}
+	}
+	return nil
 }
 
 func randomID() (string, error) {

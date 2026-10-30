@@ -41,7 +41,11 @@ stream yet and are rejected at start-up.
 - Credentials: put the account's login files in `CredentialFiles` (keys relative to HOME). If the
   CLI refreshes a token during a turn, `SaveCredentials` gets the new files before the turn ends;
   store them or the next turn replays an expired token.
-- Never mount anything from your users' HOME. The sandbox rules still apply.
+- A host that already has its own migrations needs a number past its latest one (the consumers
+  hit a collision with an existing `…0021`).
+- Never mount anything from your users' HOME. The sandbox rejects a mount whose host source is
+  the HOME of the user running the server, or a directory above it such as `/` (the turn then
+  fails with `run_failed`); a directory inside HOME, such as your data root, is allowed.
 
 ## Go side
 
@@ -72,6 +76,15 @@ plain header).
 
 Operational notes:
 
+- **Origins.** A write is refused unless its `Origin` is allowed. The default (same origin: the
+  Origin's host must equal the request's Host) does not hold behind a proxy that rewrites the Host,
+  such as a Next.js `rewrites()` to the API: list the web's origin in `AllowedOrigins`. A request
+  without an `Origin` (curl, a script) is refused unless `AllowNoOrigin` is set; set it for APIs
+  authenticated by a bearer token, not for cookie authentication.
+- **Router timeouts.** A middleware that gives every request a deadline (chi's `Timeout`, a
+  `context.WithTimeout`) ends the event stream when it expires. Exclude `…/stream` from it. The
+  server's own `WriteTimeout` is not a problem: the handler lifts it for the stream, also through
+  gin and chi wrappers (tested in two consumers).
 - **Streams are long-lived.** Do not put a write timeout on the server that serves them, and make
   sure a reverse proxy does not buffer `text/event-stream` (the handler sends
   `X-Accel-Buffering: no`).
@@ -79,6 +92,26 @@ Operational notes:
   default 2 s) or follow a turn (it polls the store every `EventPoll`, default 1 s). The
   per-principal active-turn and stream limits are per instance.
 - `RecoverStale` marks turns whose instance died (lease of 2 minutes expired) as `interrupted`.
+
+## Retention (the host's job)
+
+aicli never deletes conversations; your database and your policy do. Two rules keep the log valid:
+
+- **Remove whole conversations, not slices of them.** Delete or archive a conversation with all its
+  turns and events together (for example one that was idle for six months, after exporting it with
+  `Service.Export` in JSON to cold storage). Dropping events by *event time* (`DROP PARTITION` on a
+  table partitioned by month) removes the start of conversations that are still in use, which breaks
+  the Store contract (`seq` is consecutive from 1 and the log is append-only) and the replay of
+  history. It also cannot work with the usual `(conversation_id, seq)` primary key, because a
+  partition key has to be part of it.
+- **If the table needs partitioning, partition by conversation.** Put the conversation's creation
+  month (or a hash of `conversation_id`) in the events table and in its key, so a partition holds
+  whole conversations; archiving an old conversation set and dropping its partition is then instant
+  and cannot cut a live conversation.
+
+Workspaces and CLI sessions on disk are cleaned by the `janitor` (see the README). It keeps what
+changed within the TTL; pass `JanitorConfig.Keep` to also keep the ones whose conversation still
+exists in your database.
 
 ## Web side
 
@@ -111,8 +144,17 @@ export function Workspace({ id, setId }: { id?: string; setId: (id: string) => v
   placed in a URL. Exports are downloaded through `fetch` and saved from a Blob.
 - Output from the CLI is rendered as text, never as HTML or markdown.
 
-Until the package is published, depend on it by path (`link:../aicli/web` with pnpm,
-`file:../aicli/web` with npm) after `make web-build`.
+Until the package is published, depend on it by path after `make web-build`, in a way that makes
+a **copy** (not a symlink): `file:../aicli/web` with pnpm (pnpm copies it and resolves the React peer
+to your app's React), `npm install --install-links file:../aicli/web` with npm (plain `file:` makes a
+symlink in npm). A symlinked package resolves `react` from its own `node_modules`, the app then
+loads two copies of React and every hook fails with "Invalid hook call" or `useContext` of null. If
+you do link it (`link:` with pnpm), make the bundler resolve `react` and `react-dom` to one copy
+(`resolve.dedupe` in Vite). After rebuilding the package, install again to refresh the copy.
+
+`examples/web` is a complete Vite + React app built this way (`make web-example` builds it). To try
+it, run `go run ./examples/go-server -origin http://localhost:5173`, then `pnpm dev` in
+`examples/web` and open http://localhost:5173; Vite forwards `/api` to the server.
 
 ## HTTP API
 

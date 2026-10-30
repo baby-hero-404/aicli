@@ -103,7 +103,7 @@ Versions are re-checked against the registry (and the 7-day rule) at install tim
 - Database-backed `Store` implementations.
 - Continuing a non-resumable conversation by re-feeding its transcript into a new CLI session.
 - Pub/sub fan-out, message brokers, sticky-session requirements, separate conversation microservice.
-- Publishing `@aicli/ui` to a registry. Until then consumers depend on it by path (`link:` for pnpm, `file:` for npm) and run its build.
+- Publishing `@aicli/ui` to a registry. Until then consumers depend on it by path as a copy (`file:` for pnpm, `npm install --install-links file:` for npm; `link:` and plain npm `file:` symlink it and duplicate React) and run its build.
 
 ## Impact
 

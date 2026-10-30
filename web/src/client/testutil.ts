@@ -93,7 +93,11 @@ export function fakeServer(opts: FakeServerOptions = {}) {
     }
     if (method === "POST" && url.endsWith("/conversations")) return jsonResponse({ ...info, id: "c-new", title: undefined }, 201);
     if (/\/conversations\?/.test(url) || url.endsWith("/conversations")) {
-      return jsonResponse({ items: [info, { ...info, id: "c2", title: "Second" }], nextCursor: url.includes("cursor") ? undefined : "next" });
+      // Page 2 (a cursor was sent) holds different conversations, as a real server's would.
+      if (url.includes("cursor")) {
+        return jsonResponse({ items: [{ ...info, id: "c3", title: "Third" }, { ...info, id: "c4", title: "Fourth" }] });
+      }
+      return jsonResponse({ items: [info, { ...info, id: "c2", title: "Second" }], nextCursor: "next" });
     }
     if (/\/conversations\/[^/?]+$/.test(url)) return jsonResponse(info);
     return new Response("not found", { status: 404 });

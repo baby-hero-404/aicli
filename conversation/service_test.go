@@ -190,13 +190,14 @@ func (s *memStore) ListEvents(_ context.Context, id string, after int64, limit i
 }
 
 type resolver struct {
-	mu        sync.Mutex
-	workspace string
-	extraArgs []string
-	err       error
-	saveErr   error
-	saved     []map[string]string
-	resolved  int
+	mu            sync.Mutex
+	workspace     string
+	sessionMounts map[string]string
+	extraArgs     []string
+	err           error
+	saveErr       error
+	saved         []map[string]string
+	resolved      int
 }
 
 func (r *resolver) Resolve(context.Context, Principal, Conversation) (run.Request, error) {
@@ -207,7 +208,7 @@ func (r *resolver) Resolve(context.Context, Principal, Conversation) (run.Reques
 		return run.Request{}, r.err
 	}
 	// A hostile or careless resolver: the service must overwrite all of these.
-	return run.Request{Workspace: r.workspace, Profile: "claude_code", Command: "rm", Args: []string{"-rf"}, ExtraArgs: r.extraArgs, Prompt: "ignored"}, nil
+	return run.Request{Workspace: r.workspace, SessionMounts: r.sessionMounts, Profile: "claude_code", Command: "rm", Args: []string{"-rf"}, ExtraArgs: r.extraArgs, Prompt: "ignored"}, nil
 }
 
 func (r *resolver) SaveCredentials(_ context.Context, _ Principal, _ Conversation, files map[string]string) error {
@@ -1116,5 +1117,82 @@ func TestLiveTurnStreamsToASubscriber(t *testing.T) {
 	assertSeqs(t, got, 1, int64(len(got)))
 	if got[0].Kind != stream.KindUserMessage || text(got) != "pong\n" {
 		t.Errorf("events = %v, text %q", kinds(got), text(got))
+	}
+}
+
+// A runtime that delivers output after Run returned must not crash the host: the writer drops the
+// late event instead of sending on a closed channel.
+func TestWriterDropsEventsEmittedAfterClose(t *testing.T) {
+	h := newHarness(t, scripted())
+	c := h.create(alice)
+	w := h.svc.newWriter(c.ID, "turn-1")
+
+	w.emit(Event{Kind: stream.KindAssistantText, Text: "before"})
+	w.close()
+	w.emit(Event{Kind: stream.KindAssistantText, Text: "late"}) // must not panic
+	w.close()                                                   // closing twice is harmless
+
+	if got := text(h.history(c.ID)); got != "before" {
+		t.Errorf("stored text = %q, want only the event emitted before close", got)
+	}
+}
+
+// policyRuntime applies the same request validation as the Docker runtime before "running".
+type policyRuntime struct {
+	sandbox.StubRuntime
+	mu       sync.Mutex
+	executed int
+}
+
+func (p *policyRuntime) Run(_ context.Context, req sandbox.CommandRequest) (*sandbox.CommandResult, error) {
+	if err := sandbox.ValidateRequest(req, sandbox.NetworkModeBridge); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.executed++
+	p.mu.Unlock()
+	return &sandbox.CommandResult{}, nil
+}
+
+// A Resolver is trusted, but a mistake in it must not hand the host user's HOME to the sandbox.
+func TestResolverMountingHostHomeIsRejected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tests := []struct {
+		name         string
+		mount        string
+		wantRejected bool
+	}{
+		{"HOME itself", home, true},
+		{"parent of HOME", filepath.Dir(home), true},
+		{"directory inside HOME", filepath.Join(home, "sessions", "c1"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &policyRuntime{}
+			h := newHarness(t, rt)
+			h.res.sessionMounts = map[string]string{"/home/agent/.gemini": tt.mount}
+			c := h.create(alice)
+			tr := h.send(alice, c.ID, "hello", "m1")
+			h.settle(c.ID)
+
+			stored, _ := h.st.GetTurn(context.Background(), tr.ID)
+			rt.mu.Lock()
+			executed := rt.executed
+			rt.mu.Unlock()
+			if tt.wantRejected {
+				if executed != 0 || stored.Status != TurnFailed || stored.Failure != FailRunFailed {
+					t.Errorf("executed=%d turn=%+v, want a failed turn and nothing executed", executed, stored)
+				}
+				if got := lastEvent(h.history(c.ID)); got.Meta["failure"] != string(FailRunFailed) || strings.Contains(got.Text, home) {
+					t.Errorf("final event = %+v", got)
+				}
+				return
+			}
+			if executed != 1 || stored.Status == TurnFailed {
+				t.Errorf("executed=%d turn=%+v, want the turn to run", executed, stored)
+			}
+		})
 	}
 }

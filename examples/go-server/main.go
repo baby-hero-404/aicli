@@ -24,6 +24,7 @@ import (
 
 	"github.com/baby-hero-404/aicli/conversation"
 	"github.com/baby-hero-404/aicli/conversation/memstore"
+	"github.com/baby-hero-404/aicli/janitor"
 	"github.com/baby-hero-404/aicli/run"
 	"github.com/baby-hero-404/aicli/sandbox"
 	dockerrt "github.com/baby-hero-404/aicli/sandbox/docker"
@@ -157,21 +158,19 @@ func runServer(addr, data, creds, origin string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// Turns whose owner died (for example after a crash) are marked interrupted.
-	go func() {
-		for t := time.NewTicker(time.Minute); ; {
-			if n, err := svc.RecoverStale(ctx); err != nil {
-				logger.Warn("recover stale turns", "err", err)
-			} else if n > 0 {
-				logger.Info("recovered stale turns", "count", n)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			}
-		}
-	}()
+	// Background housekeeping, no cron: turns whose owner died (for example after a crash) are marked
+	// interrupted, orphaned sandbox containers are removed, and workspaces and CLI sessions that saw
+	// no activity for 30 days are deleted.
+	j := janitor.New(janitor.Config{
+		Conversations: svc,
+		Orphans:       docker,
+		Filesystem: sandbox.JanitorConfig{
+			WorkspacesRoot: filepath.Join(data, "workspaces"),
+			SessionsRoot:   filepath.Join(data, "sessions"),
+		},
+		Logger: logger,
+	})
+	j.Start(ctx)
 
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

@@ -230,6 +230,8 @@ describe("<ConversationList>", () => {
     await user.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(server.callsTo("cursor=next")).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
+    expect(screen.getByText("Third")).toBeTruthy();
+    expect(screen.getByText("Fourth")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "New conversation" }));
     await waitFor(() => expect(onSelect).toHaveBeenLastCalledWith("c-new"));

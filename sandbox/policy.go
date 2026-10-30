@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -130,7 +131,43 @@ func validateMounts(req CommandRequest) error {
 			return fmt.Errorf("sandbox: cache mount target %q must be a clean absolute container path", target)
 		}
 	}
+	return validateNoHostHome(req)
+}
+
+// validateNoHostHome rejects a bind-mount source that is the host user's HOME or one of its
+// ancestors (such as "/"): mounting it would hand the sandbox every login, key and token the
+// user has. A directory inside HOME is fine; data roots often live there.
+func validateNoHostHome(req CommandRequest) error {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil // no HOME to protect
+	}
+	sources := []string{req.Workspace, req.LogsHostDir}
+	for _, m := range []map[string]string{req.SessionMounts, req.ReadOnlyMounts, req.ExtraCacheMounts} {
+		for _, host := range m {
+			sources = append(sources, host)
+		}
+	}
+	for _, src := range sources {
+		if src != "" && coversPath(src, home) {
+			return fmt.Errorf("sandbox policy: mount source %q would expose the host user's HOME", src)
+		}
+	}
 	return nil
+}
+
+// coversPath reports whether dir is path or one of its ancestors, comparing real locations when
+// they can be resolved so that a symlink to HOME is caught too.
+func coversPath(dir, p string) bool {
+	resolve := func(s string) string {
+		s = filepath.Clean(s)
+		if r, err := filepath.EvalSymlinks(s); err == nil {
+			return r
+		}
+		return s
+	}
+	rel, err := filepath.Rel(resolve(dir), resolve(p))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ValidateRequest checks req before a runtime executes it: the command policy, the

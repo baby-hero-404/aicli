@@ -21,11 +21,24 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
+// Container labels set on every sandbox container created by Runtime.
+const (
+	LabelApp       = "app"
+	LabelSandbox   = "aicli.sandbox"
+	LabelManagedBy = "aicli.managed"
+	LabelTaskID    = "aicli.task_id"
+	LabelCreatedAt = "aicli.created_at"
+)
+
 // DefaultImage is the image Runtime uses when Config.Image is empty: the reference image built
 // from docker/base (make image-base).
 const DefaultImage = "aicli/base:latest"
 
 const tracerName = "github.com/baby-hero-404/aicli/sandbox/docker"
+
+// logDrainTimeout bounds how long Run waits, once the log stream is closed, for an output write
+// that is already in progress to finish.
+const logDrainTimeout = 5 * time.Second
 
 // Config configures a Docker runtime.
 type Config struct {
@@ -324,6 +337,7 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 			Cmd:        req.Command,
 			Env:        env,
 			WorkingDir: "/workspace",
+			Labels:     r.buildLabels(req),
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode: networkMode,
@@ -521,13 +535,21 @@ func (r *Runtime) streamContainerLogs(ctx context.Context, containerID, logFileP
 	}
 
 	errCh := make(chan error, 1)
+	copyDone := make(chan struct{})
 	go func() {
+		defer close(copyDone)
 		_, copyErr := stdcopy.StdCopy(stdoutW, stderrW, logReader)
 		errCh <- copyErr
 	}()
 
+	// The closer also waits for the copy goroutine: it writes to output (the caller's event
+	// sink), and sandbox.CommandRequest.Output promises no writes after Run returns.
 	closer := func() {
 		_ = logReader.Close()
+		select {
+		case <-copyDone:
+		case <-time.After(logDrainTimeout):
+		}
 		if logFile != nil {
 			_ = logFile.Close()
 		}
@@ -583,6 +605,7 @@ func (r *Runtime) RunInteractive(ctx context.Context, req sandbox.CommandRequest
 			AttachStdin:  true,
 			AttachStdout: true,
 			AttachStderr: true,
+			Labels:       r.buildLabels(req),
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode: networkMode,
@@ -708,4 +731,88 @@ func readOnlyMounts(req sandbox.CommandRequest) []mount.Mount {
 		out = append(out, mount.Mount{Type: mount.TypeBind, Source: req.ReadOnlyMounts[target], Target: target, ReadOnly: true})
 	}
 	return out
+}
+
+func (r *Runtime) buildLabels(req sandbox.CommandRequest) map[string]string {
+	labels := map[string]string{
+		LabelApp:       "aicli",
+		LabelSandbox:   "true",
+		LabelManagedBy: "true",
+		LabelCreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if req.TaskID != "" {
+		labels[LabelTaskID] = req.TaskID
+	}
+	return labels
+}
+
+// PruneOrphaned removes sandbox containers aicli left behind (a crash between create and remove).
+// A container is removed only if it carries LabelSandbox or LabelManagedBy, is stopped for good
+// (exited, dead, or created but never started: never running, restarting, paused or being
+// removed), and stopped at least minAge ago. The age counts from when it stopped, not from when it
+// was created, so the container of a long run that just finished is not taken from under the Run
+// that is still reading its logs. Nothing else on the host is touched.
+//
+// It returns how many containers it removed.
+func (r *Runtime) PruneOrphaned(ctx context.Context, minAge time.Duration) (int, error) {
+	list, err := r.client.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: make(client.Filters).Add("label", LabelSandbox+"=true"),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list containers for pruning: %w", err)
+	}
+	// Containers created by another label set (LabelManagedBy only) are rare but allowed.
+	managed, err := r.client.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: make(client.Filters).Add("label", LabelManagedBy+"=true"),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list containers for pruning: %w", err)
+	}
+
+	now := time.Now()
+	seen := map[string]bool{}
+	pruned := 0
+	for _, c := range append(list.Items, managed.Items...) {
+		if seen[c.ID] {
+			continue
+		}
+		seen[c.ID] = true
+		if err := ctx.Err(); err != nil {
+			return pruned, err
+		}
+		if !orphanState(c.State) {
+			continue
+		}
+		stopped := time.Unix(c.Created, 0)
+		if c.State != container.StateCreated {
+			info, err := r.client.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
+			if err != nil {
+				continue // gone already, or not readable: leave it
+			}
+			if info.Container.State != nil {
+				if t, err := time.Parse(time.RFC3339Nano, info.Container.State.FinishedAt); err == nil && t.After(stopped) {
+					stopped = t
+				}
+			}
+		}
+		if now.Sub(stopped) < minAge {
+			continue
+		}
+		if _, err := r.client.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err == nil {
+			pruned++
+		}
+	}
+	return pruned, nil
+}
+
+// orphanState reports whether a container in this state can be an orphan: it is not doing, and
+// will not resume, any work.
+func orphanState(state container.ContainerState) bool {
+	switch state {
+	case container.StateExited, container.StateDead, container.StateCreated:
+		return true
+	}
+	return false
 }

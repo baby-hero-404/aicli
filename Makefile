@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help verify test test-docker lint tidy mod upgrade image-base lint-docker web-install web-lint web-test web-build web-verify tools
+.PHONY: help verify test test-docker lint tidy mod upgrade image-base lint-docker web-install web-lint web-test web-build web-verify web-example tools
 
 help: ## Hiển thị danh sách target
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -9,7 +9,7 @@ help: ## Hiển thị danh sách target
 test: ## Chạy test suite với race detector và coverage
 	go test ./... -race -cover
 
-verify: lint test web-verify ## Chạy lint và test cho Go và web (cổng kiểm tra trước khi hoàn tất)
+verify: lint test web-verify web-example ## Chạy lint và test cho Go và web (cổng kiểm tra trước khi hoàn tất)
 
 lint: ## Kiểm tra format (fail nếu có file chưa gofmt) và chạy go vet
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: các file trên chưa được format"; exit 1; }
@@ -21,7 +21,7 @@ tidy: ## Dọn dẹp go.mod và go.sum
 mod: upgrade ## Cập nhật toàn bộ dependency lên bản mới nhất (alias của upgrade)
 
 upgrade: ## Nâng cấp dependency lên bản mới nhất và chạy test kiểm tra
-	go get -u ./...
+	go get -u $$(go list ./...)
 	go mod tidy
 	$(MAKE) test
 
@@ -52,6 +52,9 @@ web-build: web-install ## Build web/ rồi kiểm tra dist, exports (publint, at
 	cd web && pnpm run build
 
 web-verify: web-lint web-test web-build ## Toàn bộ kiểm tra của web/
+
+web-example: web-build ## Build examples/web (Vite + React) với @aicli/ui vừa build, để biết ví dụ không bị hỏng
+	cd examples/web && pnpm install --frozen-lockfile --ignore-scripts && pnpm run build
 
 # ---- Host-installed CLIs (package toolchain) ----
 tools: ## Build the aicli-tools command into bin/

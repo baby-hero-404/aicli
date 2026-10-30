@@ -307,3 +307,62 @@ func (c *ctxProbe) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbo
 	c.cancelled = ctx.Err() != nil
 	return nil, ctx.Err()
 }
+
+func resultLine(id, status string) string {
+	return fmt.Sprintf(`{"event":"result","result":{"conversation_id":%q,"status":%q}}`, id, status)
+}
+
+// A reply that talks about rate limits or 401s is not a quota or auth failure when the CLI says
+// the turn succeeded and exited cleanly.
+func TestRun_ReplyMentioningFailureWordsIsStillASuccess(t *testing.T) {
+	for _, reply := range []string{
+		"Back off and retry when you get HTTP 429 or a rate limit error.",
+		"Return 401 Unauthorized when the token is missing; the user is not authenticated.",
+		"The quota exceeded path should log and continue.",
+	} {
+		stdout := strings.Join([]string{initLine("s1"), textLine("s1", reply), resultLine("s1", "SUCCESS")}, "\n") + "\n"
+		rt := &sandboxmock.Runtime{Results: []*sandbox.CommandResult{{Stdout: stdout}}}
+		req := agyReq(t)
+		collect(&req)
+
+		res, err := (&Runner{Runtime: rt}).Run(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !res.Success || res.QuotaExceeded || res.AuthInvalid || res.Error != "" {
+			t.Errorf("reply %q misclassified: %+v", reply, res)
+		}
+	}
+}
+
+// The same words still count when the run did not succeed.
+func TestRun_FailureSignaturesStillDetectedWhenTheRunFailed(t *testing.T) {
+	tests := []struct {
+		name   string
+		result sandbox.CommandResult
+		check  func(*Result) bool
+	}{
+		{"quota, non-zero exit", sandbox.CommandResult{ExitCode: 1, Stderr: "quota exceeded"}, func(r *Result) bool { return r.QuotaExceeded && !r.Success }},
+		{"auth, non-zero exit", sandbox.CommandResult{ExitCode: 1, Stderr: "Not logged in"}, func(r *Result) bool { return r.AuthInvalidConfirmed && !r.Success }},
+		{"auth, exit 0 but no completed turn", sandbox.CommandResult{Stdout: "Authentication failed"}, func(r *Result) bool { return r.AuthInvalid && !r.Success }},
+		{
+			"quota, CLI reported a failed turn",
+			sandbox.CommandResult{Stdout: strings.Join([]string{initLine("s1"), resultLine("s1", "ERROR"), "RESOURCE_EXHAUSTED"}, "\n")},
+			func(r *Result) bool { return r.QuotaExceeded },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &sandboxmock.Runtime{Results: []*sandbox.CommandResult{&tt.result}}
+			req := agyReq(t)
+			collect(&req)
+			res, err := (&Runner{Runtime: rt}).Run(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !tt.check(res) {
+				t.Errorf("result = %+v", res)
+			}
+		})
+	}
+}

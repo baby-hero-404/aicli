@@ -41,6 +41,26 @@ func TestOpen(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), ContainerRoot+"/*/bin") {
 		t.Errorf("profile script = %q, %v", b, err)
 	}
+
+	// Test DefaultRoot, OpenDefault, and Open("")
+	t.Setenv("AICLI_TOOLS_ROOT", t.TempDir())
+	defStore, err := OpenDefault()
+	if err != nil {
+		t.Fatalf("OpenDefault failed: %v", err)
+	}
+	if defStore.Root() != os.Getenv("AICLI_TOOLS_ROOT") {
+		t.Errorf("expected root %q, got %q", os.Getenv("AICLI_TOOLS_ROOT"), defStore.Root())
+	}
+
+	// Test WrapDefault
+	stub := sandbox.NewStubRuntime()
+	wrapped, err := WrapDefault(stub)
+	if err != nil {
+		t.Fatalf("WrapDefault failed: %v", err)
+	}
+	if wrapped == nil {
+		t.Fatal("WrapDefault returned nil")
+	}
 }
 
 func TestNamesAreValidated(t *testing.T) {
@@ -346,5 +366,75 @@ func TestPruneStaging(t *testing.T) {
 	}
 	if _, err := os.Stat(fresh); err != nil {
 		t.Error("an install that may still be running was deleted")
+	}
+}
+
+func TestDefaultRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	t.Setenv("AICLI_TOOLS_ROOT", "")
+	if root, err := DefaultRoot(); err != nil || root != filepath.Join(home, ".aicli", "tools") {
+		t.Errorf("without the variable: %q, %v, want ~/.aicli/tools", root, err)
+	}
+
+	t.Setenv("AICLI_TOOLS_ROOT", "/var/lib/aicli/tools")
+	if root, err := DefaultRoot(); err != nil || root != "/var/lib/aicli/tools" {
+		t.Errorf("with the variable: %q, %v", root, err)
+	}
+
+	t.Setenv("AICLI_TOOLS_ROOT", "relative/dir")
+	if root, err := DefaultRoot(); err != nil || !filepath.IsAbs(root) {
+		t.Errorf("a relative AICLI_TOOLS_ROOT must become absolute: %q, %v", root, err)
+	}
+
+	t.Setenv("AICLI_TOOLS_ROOT", "")
+	t.Setenv("HOME", "")
+	if root, err := DefaultRoot(); err == nil {
+		t.Errorf("no HOME and no variable returned %q, want an error", root)
+	}
+}
+
+func TestPrune(t *testing.T) {
+	s := newStore(t)
+	// Install 5 versions of agy
+	versions := []string{"1.4.8", "1.4.9", "1.4.10", "1.4.11", "1.4.12"}
+	for _, v := range versions {
+		fakeInstall(t, s, "agy", v)
+	}
+	if err := s.Use("agy", "1.4.12"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prune keeping 3 versions (should remove 1.4.8 and 1.4.9)
+	removed, err := s.Prune("agy", 3)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(removed) != 2 || removed[0] != "1.4.8" || removed[1] != "1.4.9" {
+		t.Errorf("removed = %v, want [1.4.8, 1.4.9]", removed)
+	}
+
+	cur, err := s.Versions("agy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cur) != 3 || cur[0] != "1.4.10" || cur[1] != "1.4.11" || cur[2] != "1.4.12" {
+		t.Errorf("remaining = %v, want [1.4.10, 1.4.11, 1.4.12]", cur)
+	}
+
+	// Test that active version is never removed even if it's older
+	if err := s.Use("agy", "1.4.10"); err != nil {
+		t.Fatal(err)
+	}
+	// Prune keeping 1 version: 1.4.10 is current so it must survive
+	removed2, err := s.Prune("agy", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range removed2 {
+		if v == "1.4.10" {
+			t.Errorf("current version 1.4.10 was removed: %v", removed2)
+		}
 	}
 }

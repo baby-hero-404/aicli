@@ -26,6 +26,9 @@ type writer struct {
 	turnID         string
 	ch             chan Event
 	done           chan struct{}
+
+	mu     sync.Mutex // guards closed and the send on ch against close
+	closed bool
 }
 
 func (s *Service) newWriter(conversationID, turnID string) *writer {
@@ -35,16 +38,27 @@ func (s *Service) newWriter(conversationID, turnID string) *writer {
 }
 
 // emit queues an event. It blocks when the queue is full, which slows the CLI's output
-// reader rather than losing events. It must not be called after close.
+// reader rather than losing events. An event emitted after close is dropped: a runtime that
+// misbehaves and delivers output late must not be able to crash the host.
 func (w *writer) emit(e Event) {
 	e.TurnID = w.turnID
 	e.Time = w.s.cfg.Now()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 	w.ch <- e
 }
 
-// close waits until everything queued has been stored.
+// close waits until everything queued has been stored. It is safe to call more than once.
 func (w *writer) close() {
-	close(w.ch)
+	w.mu.Lock()
+	if !w.closed {
+		w.closed = true
+		close(w.ch)
+	}
+	w.mu.Unlock()
 	<-w.done
 }
 
