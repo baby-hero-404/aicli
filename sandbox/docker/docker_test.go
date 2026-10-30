@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"github.com/baby-hero-404/aicli/sandbox"
+	"github.com/baby-hero-404/aicli/sandbox/internal/conformance"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,4 +365,19 @@ func TestRuntime_ReadOnlyMounts(t *testing.T) {
 	if !strings.Contains(out.String(), "original") {
 		t.Errorf("interactive output = %q", out.String())
 	}
+}
+
+// TestDockerConformance runs the behavior shared by every sandbox.Runtime against a real container.
+func TestDockerConformance(t *testing.T) {
+	requireDockerTests(t)
+	rt, err := New(testConfig())
+	if err != nil {
+		t.Fatalf("docker runtime: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := rt.Prewarm(ctx); err != nil {
+		t.Fatalf("prewarm: %v", err)
+	}
+	conformance.Run(t, rt, conformance.Options{})
 }

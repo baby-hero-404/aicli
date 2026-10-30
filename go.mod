@@ -3,6 +3,7 @@ module github.com/baby-hero-404/aicli
 go 1.27.3
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
 	github.com/moby/moby/api v1.56.1
 	github.com/moby/moby/client v0.6.2

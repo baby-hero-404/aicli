@@ -201,3 +201,61 @@ func TestSession_RefusesUnsafeSeedFiles(t *testing.T) {
 		t.Error("a seed file escaped the workspace")
 	}
 }
+
+// layoutRuntime reports a layout other than the container's.
+type layoutRuntime struct {
+	fakeRuntime
+	layout func(req sandbox.CommandRequest) (sandbox.Layout, error)
+}
+
+func (l *layoutRuntime) Layout(req sandbox.CommandRequest) (sandbox.Layout, error) {
+	return l.layout(req)
+}
+
+func TestSession_UsesLayoutAndProfileEnv(t *testing.T) {
+	rt := &layoutRuntime{layout: func(req sandbox.CommandRequest) (sandbox.Layout, error) {
+		return sandbox.Layout{Workspace: req.Workspace, Home: "/unused"}, nil
+	}}
+	s := &Session{Runtime: rt, Profile: "claude_code", Env: map[string]string{"FOO": "bar", "TERM": "vt100"}}
+	if _, err := s.Run(context.Background(), &fakeTerm{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	env, ws := rt.got.Env, rt.got.Workspace
+	if env["HOME"] != ws || env["CLAUDE_CONFIG_DIR"] != ws+"/.claude" {
+		t.Errorf("HOME/CLAUDE_CONFIG_DIR = %q, %q, want under %s", env["HOME"], env["CLAUDE_CONFIG_DIR"], ws)
+	}
+	if env["FOO"] != "bar" || env["TERM"] != "vt100" {
+		t.Errorf("Session.Env must win over defaults: %v", env)
+	}
+}
+
+func TestSession_ProfileEnvDefaultsToContainerLayout(t *testing.T) {
+	rt := &fakeRuntime{}
+	s := &Session{Runtime: rt, Profile: "claude_code"}
+	if _, err := s.Run(context.Background(), &fakeTerm{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rt.got.Env["HOME"] != "/workspace" || rt.got.Env["CLAUDE_CONFIG_DIR"] != "/workspace/.claude" {
+		t.Errorf("env = %v", rt.got.Env)
+	}
+
+	rt = &fakeRuntime{}
+	if _, err := (&Session{Runtime: rt, Profile: "unknown"}).Run(context.Background(), &fakeTerm{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, ok := rt.got.Env["CLAUDE_CONFIG_DIR"]; ok {
+		t.Errorf("an unknown profile must add nothing: %v", rt.got.Env)
+	}
+}
+
+func TestSession_LayoutError(t *testing.T) {
+	boom := errors.New("boom")
+	rt := &layoutRuntime{layout: func(sandbox.CommandRequest) (sandbox.Layout, error) { return sandbox.Layout{}, boom }}
+	_, err := (&Session{Runtime: rt}).Run(context.Background(), &fakeTerm{})
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the layout error", err)
+	}
+	if rt.got.Workspace != "" {
+		t.Error("the runtime must not be started after a layout error")
+	}
+}

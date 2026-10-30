@@ -29,6 +29,10 @@ type Profile struct {
 	// events while it runs (replacing the "--output-format <fmt>" pair in Args). Empty means
 	// the profile cannot stream. Apply them with StreamingArgs.
 	StreamArgs []string `json:"stream_args,omitempty"`
+	// NoTools is true when Args disable every tool of the CLI and grant no permission bypass,
+	// so a run can only produce text. Runtimes without isolation run only such profiles unless
+	// the operator allows more.
+	NoTools bool `json:"no_tools,omitempty"`
 }
 
 // Env returns StateEnv resolved against home, e.g. {"CLAUDE_CONFIG_DIR": "/home/agent/.claude"}.
@@ -135,6 +139,7 @@ var profiles = map[string]Profile{
 	},
 	"claude_code_notools": {
 		Command:            "claude",
+		NoTools:            true,
 		Args:               []string{"--tools", "", "--safe-mode", "--strict-mcp-config", "-p", promptFileInstruction, "--output-format", "json"},
 		AuthCheckCommand:   "claude auth status",
 		TimeoutMinutes:     cliProfileTimeoutMinutes,
@@ -144,6 +149,7 @@ var profiles = map[string]Profile{
 	},
 	"antigravity_notools": {
 		Command:            "agy",
+		NoTools:            true,
 		Args:               []string{"--disable-slash-commands", "--output-format", "json", "-p", promptFileInstruction},
 		AuthCheckCommand:   "agy models",
 		TimeoutMinutes:     cliProfileTimeoutMinutes,

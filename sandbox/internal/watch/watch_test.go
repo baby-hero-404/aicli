@@ -1,4 +1,4 @@
-package docker
+package watch
 
 import (
 	"github.com/baby-hero-404/aicli/sandbox"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestActivityWriter_IdleSinceAdvancesUntilNextWrite(t *testing.T) {
-	a := newActivityWriter(io.Discard)
+	a := NewActivity(io.Discard)
 	if _, err := a.Write([]byte("hello\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -29,25 +29,25 @@ func TestActivityWriter_IdleSinceAdvancesUntilNextWrite(t *testing.T) {
 }
 
 func TestLineLoopDetector_TriggersOnRepeatedIdenticalLine(t *testing.T) {
-	d := newLineLoopDetector(io.Discard)
-	for i := 0; i < loopLineThreshold-1; i++ {
+	d := NewLoopDetector(io.Discard)
+	for i := 0; i < LoopLineThreshold-1; i++ {
 		if _, err := d.Write([]byte("panic: nil pointer dereference\n")); err != nil {
 			t.Fatalf("Write: %v", err)
 		}
 		if d.Detected() {
-			t.Fatalf("detector fired early after %d repeats (threshold is %d)", i+1, loopLineThreshold)
+			t.Fatalf("detector fired early after %d repeats (threshold is %d)", i+1, LoopLineThreshold)
 		}
 	}
 	if _, err := d.Write([]byte("panic: nil pointer dereference\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if !d.Detected() {
-		t.Fatalf("expected detector to fire after %d identical lines", loopLineThreshold)
+		t.Fatalf("expected detector to fire after %d identical lines", LoopLineThreshold)
 	}
 }
 
 func TestLineLoopDetector_DoesNotTriggerOnVariedOutput(t *testing.T) {
-	d := newLineLoopDetector(io.Discard)
+	d := NewLoopDetector(io.Discard)
 	for i := 0; i < 500; i++ {
 		if _, err := d.Write([]byte(strings.Repeat("x", i+1) + "\n")); err != nil {
 			t.Fatalf("Write: %v", err)
@@ -59,9 +59,9 @@ func TestLineLoopDetector_DoesNotTriggerOnVariedOutput(t *testing.T) {
 }
 
 func TestLineLoopDetector_HandlesPartialWritesAcrossCalls(t *testing.T) {
-	d := newLineLoopDetector(io.Discard)
+	d := NewLoopDetector(io.Discard)
 	line := "same error every time"
-	for i := 0; i < loopLineThreshold; i++ {
+	for i := 0; i < LoopLineThreshold; i++ {
 		// Split each line write across two Write calls, as a real
 		// stdcopy.StdCopy consumer might chunk mid-line.
 		if _, err := d.Write([]byte(line[:5])); err != nil {
@@ -77,12 +77,12 @@ func TestLineLoopDetector_HandlesPartialWritesAcrossCalls(t *testing.T) {
 }
 
 func TestWatchForStall_TriggersOnIdleTimeout(t *testing.T) {
-	activity := newActivityWriter(io.Discard)
+	activity := NewActivity(io.Discard)
 	done := make(chan struct{})
 	defer close(done)
 
 	triggered := make(chan string, 1)
-	go watchForStall(done, activity, nil, 10*time.Millisecond, 5*time.Millisecond, func(reason string) {
+	go Stall(done, activity, nil, 10*time.Millisecond, 5*time.Millisecond, func(reason string) {
 		triggered <- reason
 	})
 
@@ -92,14 +92,14 @@ func TestWatchForStall_TriggersOnIdleTimeout(t *testing.T) {
 			t.Fatalf("expected reason %q, got %q", sandbox.KillReasonIdleTimeout, reason)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("watchForStall did not trigger on idle timeout")
+		t.Fatal("Stall did not trigger on idle timeout")
 	}
 }
 
 func TestWatchForStall_TriggersOnLoopDetected(t *testing.T) {
-	activity := newActivityWriter(io.Discard)
-	loopDet := newLineLoopDetector(io.Discard)
-	for i := 0; i < loopLineThreshold; i++ {
+	activity := NewActivity(io.Discard)
+	loopDet := NewLoopDetector(io.Discard)
+	for i := 0; i < LoopLineThreshold; i++ {
 		_, _ = loopDet.Write([]byte("stuck in a loop\n"))
 	}
 
@@ -107,7 +107,7 @@ func TestWatchForStall_TriggersOnLoopDetected(t *testing.T) {
 	defer close(done)
 	triggered := make(chan string, 1)
 	// A generous idle timeout so only the loop condition can plausibly fire.
-	go watchForStall(done, activity, loopDet, time.Hour, 5*time.Millisecond, func(reason string) {
+	go Stall(done, activity, loopDet, time.Hour, 5*time.Millisecond, func(reason string) {
 		triggered <- reason
 	})
 
@@ -117,16 +117,16 @@ func TestWatchForStall_TriggersOnLoopDetected(t *testing.T) {
 			t.Fatalf("expected reason %q, got %q", sandbox.KillReasonLoopDetected, reason)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("watchForStall did not trigger on loop detection")
+		t.Fatal("Stall did not trigger on loop detection")
 	}
 }
 
 func TestWatchForStall_StopsWithoutTriggeringWhenDoneClosedFirst(t *testing.T) {
-	activity := newActivityWriter(io.Discard)
+	activity := NewActivity(io.Discard)
 	done := make(chan struct{})
 
 	triggered := make(chan string, 1)
-	go watchForStall(done, activity, nil, time.Hour, 5*time.Millisecond, func(reason string) {
+	go Stall(done, activity, nil, time.Hour, 5*time.Millisecond, func(reason string) {
 		triggered <- reason
 	})
 	close(done)

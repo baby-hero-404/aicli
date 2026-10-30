@@ -3,6 +3,7 @@ package toolchain
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -436,5 +437,33 @@ func TestPrune(t *testing.T) {
 		if v == "1.4.10" {
 			t.Errorf("current version 1.4.10 was removed: %v", removed2)
 		}
+	}
+}
+
+// Over a runtime that cannot mount (sandbox/host), Wrap must be harmless while nothing is
+// installed or pinned: the request goes through untouched.
+func TestWrapEmptyStoreIsPassthrough(t *testing.T) {
+	mock := &sandboxmock.Runtime{}
+	rt := Wrap(mock, newStore(t))
+	in := sandbox.CommandRequest{Command: []string{"true"}, Env: map[string]string{"FOO": "bar"}}
+	if _, err := rt.Run(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.RunInteractive(context.Background(), in, nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range mock.Requests() {
+		if len(got.ReadOnlyMounts) != 0 || len(got.Env) != 1 || got.Env["FOO"] != "bar" || got.Env["PATH"] != "" {
+			t.Errorf("request %d changed: mounts %v env %v", i, got.ReadOnlyMounts, got.Env)
+		}
+	}
+}
+
+func TestWrapDelegatesLayout(t *testing.T) {
+	want := sandbox.Layout{Workspace: "/h/ws", Home: "/h/home"}
+	mock := &sandboxmock.Runtime{LayoutFunc: func(sandbox.CommandRequest) (sandbox.Layout, error) { return want, nil }}
+	got, err := sandbox.LayoutOf(Wrap(mock, newStore(t)), sandbox.CommandRequest{})
+	if err != nil || got != want {
+		t.Errorf("LayoutOf = %+v, %v, want %+v", got, err, want)
 	}
 }

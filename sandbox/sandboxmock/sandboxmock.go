@@ -21,13 +21,27 @@ type Runtime struct {
 	// OnRun, if set, is called with each Run request before the result is returned, e.g. to
 	// write files into req.Workspace the way a container would.
 	OnRun func(req sandbox.CommandRequest)
+	// LayoutFunc, if set, reports the layout a request runs in, to simulate a runtime whose
+	// paths differ from the container's. Nil means sandbox.ContainerLayout.
+	LayoutFunc func(req sandbox.CommandRequest) (sandbox.Layout, error)
 	// Interactive, if set, replaces the default RunInteractive behavior (returning Err).
 	Interactive func(ctx context.Context, req sandbox.CommandRequest, stdin io.Reader, stdout, stderr io.Writer) error
 
 	requests []sandbox.CommandRequest
 }
 
-var _ sandbox.Runtime = (*Runtime)(nil)
+var (
+	_ sandbox.Runtime        = (*Runtime)(nil)
+	_ sandbox.LayoutProvider = (*Runtime)(nil)
+)
+
+// Layout implements sandbox.LayoutProvider.
+func (m *Runtime) Layout(req sandbox.CommandRequest) (sandbox.Layout, error) {
+	if m.LayoutFunc == nil {
+		return sandbox.ContainerLayout(), nil
+	}
+	return m.LayoutFunc(req)
+}
 
 // Requests returns a copy of the requests received so far.
 func (m *Runtime) Requests() []sandbox.CommandRequest {

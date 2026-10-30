@@ -29,6 +29,7 @@ res, _ := (&run.Runner{Runtime: docker}).Run(ctx, run.Request{
 | `run` | Run a CLI headlessly: credentials injected, per-account state mounted from `SessionDir`, prompt file, resume, capture files, outcome classification (quota, auth, loop, stall, waiting for input), telemetry, secret redaction, refreshed-credential write-back |
 | `sandbox` | `Runtime` interface and request/result types, execution policy and mount validation, `SessionDir` for per-account state, optional `Manager` for runtime detection and caches. No container dependency |
 | `sandbox/docker` | Docker implementation of `Runtime`: containers, PTY sessions, credential write-back, idle/loop/OOM detection |
+| `sandbox/host` | `Runtime` that runs the CLI as a plain child process (Linux/macOS, no Docker, milliseconds per run) with a private HOME, clean environment, process-group kill and PTY logins. Not a sandbox: only tool-less profiles and allowlisted logins by default. See [docs/host-runtime.md](docs/host-runtime.md) |
 | `sandbox/sandboxmock` | In-memory `Runtime` for tests of code that uses aicli; no Docker needed |
 | `capture` | Interactive CLI login in a sandbox; returns the credential files the CLI wrote. `RunOptions.Files` puts files in HOME first, to test a stored login |
 | `capture/ticket` | Single-use, short-lived tickets that authorize a WebSocket without exposing a bearer token (`Store` interface + in-memory implementation) |
@@ -56,7 +57,7 @@ Security model in one paragraph: the browser sends intent, never execution. A re
 
 ## Multiple accounts
 
-Give each account its own state directory with `sandbox.SessionDir(root, profile, accountID)` and pass it as `run.Request.SessionDir`. `run` mounts the profile's `StateDirs` from it and sets the profile's state environment (e.g. `CLAUDE_CONFIG_DIR`), so a login persists across that account's runs and is never visible to another account. For login sessions, pass `p.Env("/workspace")` in `capture.Session.Env` so captured files use the same layout.
+Give each account its own state directory with `sandbox.SessionDir(root, profile, accountID)` and pass it as `run.Request.SessionDir`. `run` mounts the profile's `StateDirs` from it and sets the profile's state environment (e.g. `CLAUDE_CONFIG_DIR`), so a login persists across that account's runs and is never visible to another account. For login sessions, set `capture.Session.Profile` so captured files use the same layout.
 
 ## Runtime detection (optional)
 

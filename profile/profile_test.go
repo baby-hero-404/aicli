@@ -210,6 +210,40 @@ func TestProfiles_NoTools(t *testing.T) {
 	}
 }
 
+// NoTools gates what a runtime without isolation will run, so it must be set exactly for the
+// profiles whose arguments disable tools, and never for one that grants tools or a bypass.
+func TestProfiles_NoToolsMarker(t *testing.T) {
+	want := map[string]bool{
+		"claude_code": false, "openai_codex": false, "antigravity": false,
+		"claude_code_notools": true, "antigravity_notools": true,
+	}
+	profiles := List()
+	for ref, noTools := range want {
+		p, ok := profiles[ref]
+		if !ok {
+			t.Fatalf("profile %s missing", ref)
+		}
+		if p.NoTools != noTools {
+			t.Errorf("%s: NoTools = %v, want %v", ref, p.NoTools, noTools)
+		}
+	}
+	for ref, p := range profiles {
+		if _, known := want[ref]; !known {
+			t.Errorf("profile %s is not covered by this test: decide its NoTools value", ref)
+		}
+		if !p.NoTools {
+			continue
+		}
+		for _, arg := range p.Args {
+			for _, bad := range []string{"--allowedTools", "--dangerously-skip-permissions", "--full-auto"} {
+				if arg == bad {
+					t.Errorf("%s is NoTools but passes %s", ref, bad)
+				}
+			}
+		}
+	}
+}
+
 func TestStreamingArgs(t *testing.T) {
 	prompt := promptFileInstruction
 	tests := []struct {

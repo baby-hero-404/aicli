@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/baby-hero-404/aicli/sandbox"
+	"github.com/baby-hero-404/aicli/sandbox/internal/watch"
 	"io"
 	"os"
 	"path/filepath"
@@ -377,7 +378,7 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 	}
 	defer logCloser()
 
-	// watchForStall polls
+	// watch.Stall polls
 	// the same activity/loop trackers streamContainerLogs just wired up and
 	// force-kills the container the first time either condition trips,
 	// independent of — and normally well before — req.Timeout's absolute
@@ -392,7 +393,7 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 	defer close(watchdogDone)
 	var stallMu sync.Mutex
 	var stallReason string
-	go watchForStall(watchdogDone, activity, loopDet, idleTimeout, 5*time.Second, func(reason string) {
+	go watch.Stall(watchdogDone, activity, loopDet, idleTimeout, 5*time.Second, func(reason string) {
 		stallMu.Lock()
 		stallReason = reason
 		stallMu.Unlock()
@@ -453,7 +454,7 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 	killReason := stallReason
 	stallMu.Unlock()
 
-	// stallReason only covers kills our own watchForStall watchdog
+	// stallReason only covers kills our own watch.Stall watchdog
 	// initiated. A container can also die from an external SIGKILL — most
 	// commonly the kernel/cgroup OOM killer enforcing r.config.MemoryBytes —
 	// which surfaces only as statusCode 137 via ContainerWait with no
@@ -484,11 +485,11 @@ func (r *Runtime) Run(ctx context.Context, req sandbox.CommandRequest) (*sandbox
 // channel receives the copy goroutine's terminal error (nil on clean EOF)
 // exactly once; the returned closer must be deferred by the caller to stop
 // the stream and release the log file handle.
-// streamContainerLogs additionally returns the activityWriter/lineLoopDetector
+// streamContainerLogs additionally returns the watch.Activity/watch.LoopDetector
 // that observed every byte
 // written to either stream, so Run's watchdog can poll them without a second
 // pass over the output.
-func (r *Runtime) streamContainerLogs(ctx context.Context, containerID, logFilePath string, output io.Writer) (*bytes.Buffer, *bytes.Buffer, chan error, func(), *activityWriter, *lineLoopDetector, error) {
+func (r *Runtime) streamContainerLogs(ctx context.Context, containerID, logFilePath string, output io.Writer) (*bytes.Buffer, *bytes.Buffer, chan error, func(), *watch.Activity, *watch.LoopDetector, error) {
 	logReader, err := r.client.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -520,13 +521,13 @@ func (r *Runtime) streamContainerLogs(ctx context.Context, containerID, logFileP
 		stderrW = io.MultiWriter(&stderrBuf, logFile)
 	}
 
-	// activityWriter/lineLoopDetector both wrap the already-composed
+	// watch.Activity/watch.LoopDetector both wrap the already-composed
 	// stdout/stderr writers so they observe exactly what's buffered/logged,
-	// then feed watchForStall in Run — a single shared pair across stdout
+	// then feed watch.Stall in Run — a single shared pair across stdout
 	// and stderr, since a hallucinating agent's repeated error can land on
 	// either stream depending on the CLI.
-	activity := newActivityWriter(io.Discard)
-	loopDet := newLineLoopDetector(io.Discard)
+	activity := watch.NewActivity(io.Discard)
+	loopDet := watch.NewLoopDetector(io.Discard)
 	stdoutW = io.MultiWriter(stdoutW, activity, loopDet)
 	stderrW = io.MultiWriter(stderrW, activity, loopDet)
 	if output != nil {

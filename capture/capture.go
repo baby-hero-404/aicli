@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/baby-hero-404/aicli/profile"
 	"github.com/baby-hero-404/aicli/sandbox"
 )
 
@@ -48,10 +50,13 @@ type Session struct {
 	WorkspacePrefix string
 	// Command is the program started in the sandbox. Defaults to /bin/bash.
 	Command []string
-	// Env is merged over the defaults TERM=xterm and HOME=/workspace. The session workspace
-	// is mounted at /workspace, so files a CLI writes under $HOME are collected. Include the
-	// profile's state environment (profile.Profile.Env("/workspace")) so captured files have
-	// the same layout run uses.
+	// Profile, if set, is a built-in profile ref (see package profile) whose state environment,
+	// resolved against the session HOME, is added to Env so captured files have the same layout
+	// run uses. An unknown ref adds nothing.
+	Profile string
+	// Env is merged over the defaults TERM=xterm and HOME=<session workspace> (the runtime's
+	// sandbox.Layout workspace: /workspace in a container). The workspace is HOME, so files a CLI
+	// writes under $HOME are collected. Entries here win over the defaults and over Profile's.
 	Env map[string]string
 	// Image optionally overrides the runtime's default sandbox image.
 	Image string
@@ -105,20 +110,24 @@ func (s *Session) RunWith(ctx context.Context, term Terminal, opts RunOptions) (
 	if len(command) == 0 {
 		command = []string{"/bin/bash"}
 	}
-	env := map[string]string{"TERM": "xterm", "HOME": "/workspace"}
-	for k, v := range s.Env {
-		env[k] = v
-	}
-
 	req := sandbox.CommandRequest{
 		TaskID:      taskID,
 		Workspace:   dir,
 		Command:     command,
 		NetworkMode: sandbox.NetworkModeBridge,
-		Env:         env,
 		Image:       s.Image,
 		ResizeCh:    term.Resize(),
 	}
+	layout, err := sandbox.LayoutOf(s.Runtime, req)
+	if err != nil {
+		return Result{}, fmt.Errorf("capture: sandbox layout: %w", err)
+	}
+	env := map[string]string{"TERM": "xterm", "HOME": layout.Workspace}
+	if p, ok := profile.Lookup(s.Profile); ok {
+		maps.Copy(env, p.Env(layout.Workspace))
+	}
+	maps.Copy(env, s.Env)
+	req.Env = env
 	if err := s.Runtime.RunInteractive(ctx, req, term.Stdin(), term.Stdout(), term.Stdout()); err != nil {
 		return Result{}, fmt.Errorf("capture: sandbox session: %w", err)
 	}

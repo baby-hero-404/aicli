@@ -117,6 +117,12 @@ type CommandRequest struct {
 	// root; nothing else is mounted for caches.
 	ExtraCacheMounts map[string]string
 
+	// Profile is the built-in profile ref (package profile) this request runs, set by run.Runner
+	// only when the invocation is exactly the profile's own (no extra arguments or shell
+	// snippets). Runtimes without isolation use it to decide whether to run; container runtimes
+	// ignore it. It must never be taken from client input.
+	Profile string
+
 	// CacheScope namespaces the package-install caches mounted by Manager when it has
 	// a cache root (see WithCacheRoot): runs with the same scope share caches, runs with
 	// different scopes never do. Use a project or organization ID to keep tenants apart;

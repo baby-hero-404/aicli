@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,7 +27,6 @@ const (
 	// the idle timeout, not by this cap, so it is generous: long agentic runs are normal.
 	DefaultTimeout = 5 * time.Hour
 
-	containerRoot = "/workspace"
 	// stateDirName is created inside the working directory for the prompt and context files
 	// and removed afterwards.
 	stateDirName = ".aicli"
@@ -49,9 +49,11 @@ type Request struct {
 	// argv, to avoid argument length and escaping limits.
 	Prompt string
 
-	// Workspace is the host directory bind-mounted at /workspace.
+	// Workspace is the host directory the runtime exposes to the CLI (bind-mounted at
+	// /workspace in a container).
 	Workspace string
-	// WorkDir is the directory inside the container to run in; default /workspace.
+	// WorkDir is the directory to run in, in the runtime's own paths (see sandbox.Layout);
+	// default is the layout's workspace, /workspace in a container.
 	WorkDir string
 	Image   string
 	Env     map[string]string
@@ -153,10 +155,45 @@ type Runner struct {
 	Runtime sandbox.Runtime
 }
 
+// layout returns where the runtime places req's workspace and HOME.
+func (r *Runner) layout(req Request) (sandbox.Layout, error) {
+	l, err := sandbox.LayoutOf(r.Runtime, sandbox.CommandRequest{TaskID: req.TaskID, Workspace: req.Workspace})
+	if err != nil {
+		return sandbox.Layout{}, fmt.Errorf("%w: sandbox layout: %w", ErrInvalidRequest, err)
+	}
+	return l, nil
+}
+
+// registryRun returns req.Profile when the CLI invocation Run builds is exactly the built-in
+// profile's own: same command and arguments, and no caller-supplied extra arguments or shell
+// snippets. Otherwise it returns "". The result is sandbox.CommandRequest.Profile, which runtimes
+// without isolation use to decide whether a run is allowed, so anything that could change what
+// the CLI does must make it empty.
+func registryRun(req Request) string {
+	p, ok := profile.Lookup(req.Profile)
+	if !ok || req.Command != p.Command || !slices.Equal(req.Args, p.Args) {
+		return ""
+	}
+	if len(req.ExtraArgs) > 0 || req.Setup != "" || req.Cleanup != "" {
+		return ""
+	}
+	return req.Profile
+}
+
+// registryPreflight is registryRun for Preflight, which runs the profile's auth check instead of
+// its arguments.
+func registryPreflight(req Request) string {
+	p, ok := profile.Lookup(req.Profile)
+	if !ok || req.Command != p.Command || req.AuthCheckCommand != p.AuthCheckCommand {
+		return ""
+	}
+	return req.Profile
+}
+
 // sessionLayout returns the mounts and environment that keep the profile's state in place:
 // the profile's StateEnv (so the CLI writes only inside its StateDirs) and, when SessionDir is
 // set, one mount per StateDir. Explicit Env and SessionMounts entries win.
-func sessionLayout(req Request) (map[string]string, map[string]string, error) {
+func sessionLayout(req Request, layout sandbox.Layout) (map[string]string, map[string]string, error) {
 	p, known := profile.Lookup(req.Profile)
 	if req.SessionDir != "" {
 		if !known {
@@ -167,9 +204,9 @@ func sessionLayout(req Request) (map[string]string, map[string]string, error) {
 		}
 	}
 
-	env := withDefaults(nil)
+	env := withDefaults(layout.Home, nil)
 	if known {
-		for k, v := range p.Env(sandbox.HomeDir) {
+		for k, v := range p.Env(layout.Home) {
 			env[k] = v
 		}
 	}
@@ -186,7 +223,7 @@ func sessionLayout(req Request) (map[string]string, map[string]string, error) {
 			if err := os.MkdirAll(host, 0o755); err != nil {
 				return nil, nil, fmt.Errorf("run: create session state dir: %w", err)
 			}
-			mounts[sandbox.HomeDir+"/"+dir] = host
+			mounts[layout.Home+"/"+dir] = host
 		}
 	}
 	if len(req.SessionMounts) > 0 && mounts == nil {
@@ -205,20 +242,24 @@ func (r *Runner) Preflight(ctx context.Context, req Request) (warning string, er
 	if strings.TrimSpace(req.Command) == "" {
 		return "", fmt.Errorf("%w: command is required", ErrInvalidRequest)
 	}
-	mounts, env, err := sessionLayout(req)
+	layout, err := r.layout(req)
 	if err != nil {
 		return "", err
 	}
-	creds := credentialTargets(req.CredentialFiles)
+	mounts, env, err := sessionLayout(req, layout)
+	if err != nil {
+		return "", err
+	}
+	creds := credentialTargets(layout.Home, req.CredentialFiles)
 	base := sandbox.CommandRequest{
 		TaskID: req.TaskID, Workspace: req.Workspace, Image: req.Image,
 		NetworkMode: req.NetworkMode, Timeout: preflightTimeout, CredentialFiles: creds,
-		SessionMounts: mounts, ToolVersions: req.ToolVersions,
+		SessionMounts: mounts, ToolVersions: req.ToolVersions, Profile: registryPreflight(req),
 	}
 
 	check := base
 	check.Command = []string{"bash", "-lc", "command -v " + shellQuote(req.Command) + " >/dev/null 2>&1"}
-	check.Env = map[string]string{"CI": "1", "HOME": sandbox.HomeDir}
+	check.Env = map[string]string{"CI": "1", "HOME": layout.Home}
 	res, err := r.Runtime.Run(ctx, check)
 	if err != nil {
 		return "", fmt.Errorf("run: preflight failed to run: %w", err)
@@ -267,14 +308,18 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 			return nil, err
 		}
 	}
+	layout, err := r.layout(req)
+	if err != nil {
+		return nil, err
+	}
 	workDir := req.WorkDir
 	if workDir == "" {
-		workDir = containerRoot
+		workDir = layout.Workspace
 	}
 	stateDir := workDir + "/" + stateDirName
 	promptFile := stateDir + "/prompt.md"
 
-	hostState, err := hostPath(req.Workspace, stateDir)
+	hostState, err := hostPath(req.Workspace, layout.Workspace, stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
@@ -330,7 +375,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	script := fmt.Sprintf("cd %s && %s%s; status=$?%s; %srm -rf %s; exit $status",
 		shellQuote(workDir), setup, quoted, capture.String(), cleanup, shellQuote(stateDir))
 
-	mounts, env, err := sessionLayout(req)
+	mounts, env, err := sessionLayout(req, layout)
 	if err != nil {
 		return nil, err
 	}
@@ -341,14 +386,14 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	creds := credentialTargets(req.CredentialFiles)
+	creds := credentialTargets(layout.Home, req.CredentialFiles)
 
 	sreq := sandbox.CommandRequest{
 		TaskID: req.TaskID, Workspace: req.Workspace, Image: req.Image,
 		Command: []string{"bash", "-lc", script}, Env: env, NetworkMode: req.NetworkMode,
 		Timeout: timeout, IdleTimeout: req.IdleTimeout, CredentialFiles: creds,
 		SessionMounts: mounts, LogsHostDir: req.LogsHostDir, LogFilePath: req.LogFilePath,
-		ToolVersions: req.ToolVersions,
+		ToolVersions: req.ToolVersions, Profile: registryRun(req),
 	}
 	var lines *stream.LineWriter
 	if sink != nil {
@@ -374,7 +419,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("run: sandbox run failed: %w", err)
 	}
-	res := classify(req, out, quoted, sink != nil && sink.completed)
+	res := classify(req, layout.Home, out, quoted, sink != nil && sink.completed)
 	if sink != nil {
 		res.SessionID = sink.sessionID
 		res.SkippedLines = sink.skipped + lines.Dropped()
@@ -386,7 +431,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 // successful turn: with a clean exit as well, the output is the assistant's own text and tool
 // output (a reply about HTTP 429 or "401 Unauthorized"), so the failure signatures are not
 // searched for in it.
-func classify(req Request, out *sandbox.CommandResult, quotedCommand string, streamCompleted bool) *Result {
+func classify(req Request, home string, out *sandbox.CommandResult, quotedCommand string, streamCompleted bool) *Result {
 	combined, files := extractCaptured(joinOutput(out.Stdout, out.Stderr))
 	telemetry, telemetryOK := ParseTelemetry(combined)
 
@@ -419,7 +464,7 @@ func classify(req Request, out *sandbox.CommandResult, quotedCommand string, str
 		QuotaExceeded: quota, QuotaCooldown: cooldown,
 		AuthInvalid: authInvalid, AuthInvalidConfirmed: confirmed,
 		AwaitingInput: awaiting, Files: files,
-		UpdatedCredentialFiles: relativeToHome(out.UpdatedCredentialFiles),
+		UpdatedCredentialFiles: relativeToHome(home, out.UpdatedCredentialFiles),
 	}
 	if telemetryOK {
 		res.Telemetry = &telemetry
@@ -497,7 +542,7 @@ func extractCaptured(combined string) (string, map[string]string) {
 
 // credentialTargets maps HOME-relative credential paths to absolute sandbox paths, dropping
 // anything that would resolve outside HOME.
-func credentialTargets(files map[string]string) map[string]string {
+func credentialTargets(home string, files map[string]string) map[string]string {
 	if len(files) == 0 {
 		return nil
 	}
@@ -507,18 +552,18 @@ func credentialTargets(files map[string]string) map[string]string {
 		if clean == "/" {
 			continue
 		}
-		out[sandbox.HomeDir+clean] = content
+		out[home+clean] = content
 	}
 	return out
 }
 
-func relativeToHome(files map[string]string) map[string]string {
+func relativeToHome(home string, files map[string]string) map[string]string {
 	if len(files) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(files))
 	for target, content := range files {
-		if rel, ok := strings.CutPrefix(target, sandbox.HomeDir+"/"); ok {
+		if rel, ok := strings.CutPrefix(target, home+"/"); ok {
 			out[rel] = content
 		}
 	}
@@ -545,29 +590,30 @@ func writeContext(root string, files map[string]string) error {
 	return nil
 }
 
-// hostPath maps a path inside the container's /workspace mount to its host location.
-func hostPath(hostWorkspace, containerPath string) (string, error) {
+// hostPath maps a path under the runtime's workspace (workspaceDir, /workspace in a container)
+// to its host location under hostWorkspace.
+func hostPath(hostWorkspace, workspaceDir, containerPath string) (string, error) {
 	if hostWorkspace == "" {
 		return "", fmt.Errorf("workspace is required to map container path %q", containerPath)
 	}
-	if containerPath == containerRoot {
+	if containerPath == workspaceDir {
 		return hostWorkspace, nil
 	}
-	rel, ok := strings.CutPrefix(containerPath, containerRoot+"/")
+	rel, ok := strings.CutPrefix(containerPath, workspaceDir+"/")
 	if !ok {
-		return "", fmt.Errorf("container path %q is outside the workspace mount %q", containerPath, containerRoot)
+		return "", fmt.Errorf("container path %q is outside the workspace mount %q", containerPath, workspaceDir)
 	}
 	return filepath.Join(hostWorkspace, rel), nil
 }
 
-func withDefaults(env map[string]string) map[string]string {
+func withDefaults(home string, env map[string]string) map[string]string {
 	out := make(map[string]string, len(env)+2)
 	for k, v := range env {
 		out[k] = v
 	}
 	out["CI"] = "1"
 	if _, ok := out["HOME"]; !ok {
-		out["HOME"] = sandbox.HomeDir
+		out["HOME"] = home
 	}
 	return out
 }

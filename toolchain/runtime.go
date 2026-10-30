@@ -68,6 +68,11 @@ func (r *Runtime) RunInteractive(ctx context.Context, req sandbox.CommandRequest
 	return r.inner.RunInteractive(ctx, req, stdin, stdout, stderr)
 }
 
+// Layout implements sandbox.LayoutProvider by delegating to the wrapped runtime.
+func (r *Runtime) Layout(req sandbox.CommandRequest) (sandbox.Layout, error) {
+	return sandbox.LayoutOf(r.inner, req)
+}
+
 // Prewarm implements sandbox.Runtime.
 func (r *Runtime) Prewarm(ctx context.Context) error { return r.inner.Prewarm(ctx) }
 

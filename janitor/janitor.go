@@ -3,7 +3,7 @@
 // workspaces, sessions, caches and logs, and keeps the host-installed CLI tools current and pruned.
 //
 // It depends on small interfaces, not on Docker or the conversation package: pass a
-// *docker.Runtime as Orphans and a *conversation.Service as Conversations, or leave any task out.
+// *docker.Runtime (or *host.Runtime) as Orphans and a *conversation.Service as Conversations, or leave any task out.
 package janitor
 
 import (
@@ -31,8 +31,8 @@ const (
 	DefaultToolchainTimeout = time.Hour
 )
 
-// OrphanPruner removes sandbox containers left behind that stopped at least minAge ago
-// (sandbox/docker.Runtime).
+// OrphanPruner removes sandbox leftovers that are at least minAge old: containers that stopped
+// (sandbox/docker.Runtime) or run directories of crashed runs (sandbox/host.Runtime).
 type OrphanPruner interface {
 	PruneOrphaned(ctx context.Context, minAge time.Duration) (int, error)
 }

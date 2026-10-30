@@ -49,6 +49,11 @@ func NewManager(runtime Runtime, registry *Registry, opts ...ManagerOption) *Man
 	return m
 }
 
+// Layout implements LayoutProvider by delegating to the wrapped Runtime.
+func (m *Manager) Layout(req CommandRequest) (Layout, error) {
+	return LayoutOf(m.runtime, req)
+}
+
 // Prewarm delegates directly: image pre-pulling has no per-runtime concept
 // today (the wrapped Runtime pre-pulls whatever single image it was
 // configured with), so there's nothing for the manager to add here yet.
