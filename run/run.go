@@ -48,6 +48,10 @@ type Request struct {
 	// Prompt is the task text. It is written to a file the CLI is pointed at, not passed in
 	// argv, to avoid argument length and escaping limits.
 	Prompt string
+	// PromptViaStdin feeds the prompt file to the CLI's stdin (`< prompt.md`) instead of relying on
+	// {prompt_file} in Args. Use it for CLIs that read the prompt from stdin, notably those run
+	// without tools, which cannot open a file themselves. Stdin has no length limit.
+	PromptViaStdin bool
 
 	// Workspace is the host directory the runtime exposes to the CLI (bind-mounted at
 	// /workspace in a container).
@@ -355,6 +359,9 @@ func (r *Runner) Run(ctx context.Context, req Request) (*Result, error) {
 	invocation = append(invocation, shellQuote(req.Command))
 	for _, a := range args {
 		invocation = append(invocation, shellQuote(a))
+	}
+	if req.PromptViaStdin {
+		invocation = append(invocation, "<", shellQuote(promptFile))
 	}
 	quoted := strings.Join(invocation, " ")
 

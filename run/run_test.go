@@ -99,6 +99,31 @@ func TestRun_BuildsScriptAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestRun_PromptViaStdin(t *testing.T) {
+	req := baseReq(t)
+	req.Args = []string{"-p"}
+	req.PromptViaStdin = true
+	req.CaptureFiles = []string{"out.txt"}
+	runner, rt := newRunner()
+	if _, err := runner.Run(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	script := rt.reqs[0].Command[2]
+	if want := "&& 'claude' '-p' < '/workspace/.aicli/prompt.md'; status=$?"; !strings.Contains(script, want) {
+		t.Errorf("stdin redirect missing, want %q in:\n%s", want, script)
+	}
+
+	// without the flag the script has no redirect
+	req.PromptViaStdin = false
+	runner, rt = newRunner()
+	if _, err := runner.Run(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rt.reqs[0].Command[2], "< '") {
+		t.Errorf("unexpected stdin redirect: %s", rt.reqs[0].Command[2])
+	}
+}
+
 func TestRun_QuotesHostileArguments(t *testing.T) {
 	req := baseReq(t)
 	req.Args = []string{"it's; rm -rf /"}
