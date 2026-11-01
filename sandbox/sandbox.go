@@ -192,6 +192,41 @@ type Runtime interface {
 	Prewarm(ctx context.Context) error
 }
 
+// SessionRuntime is implemented by a Runtime that can also keep a command open on pipes rather
+// than running it once to completion: start it before there is anything to send, then write and
+// read turns as they become available (see run.Session, which builds the CLI-level turn protocol
+// on top of this). RunInteractive does not serve this: it allocates a PTY, which echoes input and
+// rewrites "\n" to "\r\n", corrupting a newline-delimited-JSON protocol. The host runtime
+// (sandbox/host) implements SessionRuntime; a container runtime does not yet, so every account
+// shares the host runtime's own isolation (private HOME/credential files per request) rather than
+// a container per process, same as Run does today.
+type SessionRuntime interface {
+	Start(ctx context.Context, req CommandRequest) (Process, error)
+}
+
+// Process is one long-lived sandboxed command started by SessionRuntime.Start. The caller owns
+// its lifecycle: write to Stdin, read from Stdout, and either let the process exit on its own
+// (closing Stdin signals EOF) or call Kill, then always call Wait exactly once to reap it and
+// collect its result.
+type Process interface {
+	// Stdin is the command's standard input. Lines written here must be complete (callers add
+	// their own trailing "\n"); closing it signals EOF to the child.
+	Stdin() io.WriteCloser
+	// Stdout streams the command's standard output as the OS delivers it. Stderr is not
+	// exposed; implementations capture it internally for CommandResult.Stderr, the same as Run.
+	Stdout() io.Reader
+	// Wait blocks until the process has exited and returns its result, in the same shape Run
+	// does (ExitCode, Stderr, UpdatedCredentialFiles, Killed/KillReason). It must be called
+	// exactly once, after the caller has finished reading Stdout (or killed the process) —
+	// calling it concurrently with unread Stdout data may deadlock, exactly as os/exec's Wait
+	// documents for a pipe obtained via StdoutPipe.
+	Wait() (*CommandResult, error)
+	// Kill ends the process (and, for an isolated runtime, everything it started) with reason
+	// recorded in the CommandResult Wait later returns. Calling it more than once, or after the
+	// process has already exited, is a no-op.
+	Kill(reason string) error
+}
+
 // StubRuntime validates requests but executes nothing. Useful for local development without
 // Docker; for tests prefer sandbox/sandboxmock, which records requests and scripts results.
 type StubRuntime struct{}

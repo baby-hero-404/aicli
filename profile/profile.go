@@ -29,6 +29,17 @@ type Profile struct {
 	// events while it runs (replacing the "--output-format <fmt>" pair in Args). Empty means
 	// the profile cannot stream. Apply them with StreamingArgs.
 	StreamArgs []string `json:"stream_args,omitempty"`
+	// SessionArgs are the flags that make the CLI stay open, reading one turn at a time from
+	// stdin as newline-delimited JSON and printing one result per turn, instead of taking a
+	// single prompt and exiting (used in place of Args by run.Runner.StartSession). Empty means
+	// the profile does not support a warm session; a caller gets ErrStreamingUnsupported.
+	SessionArgs []string `json:"session_args,omitempty"`
+	// SessionInput names the shape run.Session must write to this profile's stdin for one turn
+	// — "agy" ({"event":"user","message":{"content":…}}) or "claude"
+	// ({"type":"user","message":{"role":"user","content":[{"type":"text","text":…}]}}). Pinned
+	// by the contract test in run/stream/contract_cli_test.go; re-run it after any CLI upgrade.
+	// Empty means the profile has no SessionArgs either.
+	SessionInput string `json:"session_input,omitempty"`
 	// NoTools is true when Args disable every tool of the CLI and grant no permission bypass,
 	// so a run can only produce text. Runtimes without isolation run only such profiles unless
 	// the operator allows more.
@@ -146,6 +157,15 @@ var profiles = map[string]Profile{
 		CredentialProvider: "cli:claude",
 		StateDirs:          []string{".claude"},
 		StateEnv:           map[string]string{"CLAUDE_CONFIG_DIR": ".claude"},
+		// Verified against the real binary (2026-10-31): claude prints nothing at all, not even
+		// its own "system/init" line, until the first turn's bytes reach stdin — unlike agy.
+		// run.Session.Ready() treats this profile's readiness as "the process is alive", not as
+		// a line to wait for. Measured 5x: pre-spawning does not beat a one-shot run (see
+		// faster-learning/docs/openspecs/ai-cli-warm-pool/tasks.md Phase 0), so no caller enables
+		// warming for this profile today — SessionArgs exists so it can be reused if that
+		// changes, not because it is currently recommended.
+		SessionArgs:  []string{"--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--tools", ""},
+		SessionInput: "claude",
 	},
 	"antigravity_notools": {
 		Command:            "agy",
@@ -156,6 +176,12 @@ var profiles = map[string]Profile{
 		CredentialProvider: "cli:antigravity",
 		StateDirs:          []string{".gemini"},
 		StreamArgs:         agyStreamArgs,
+		// Verified against the real binary (2026-10-31): agy prints {"event":"init",…} as soon
+		// as it is ready, before any stdin data — run.Session.Ready() waits for that line. A
+		// turn on an already-ready process measured ~2.7-3.2s vs ~11s cold spawn-to-ready, so
+		// this is the profile the warm pool actually targets.
+		SessionArgs:  []string{"--sandbox", "--disable-slash-commands", "--input-format", "stream-json", "--output-format", "stream-json", "-p", ""},
+		SessionInput: "agy",
 	},
 }
 
@@ -239,6 +265,7 @@ func StreamingArgs(ref string, args []string) ([]string, error) {
 func (p Profile) clone() Profile {
 	p.Args = slices.Clone(p.Args)
 	p.StreamArgs = slices.Clone(p.StreamArgs)
+	p.SessionArgs = slices.Clone(p.SessionArgs)
 	p.StateDirs = slices.Clone(p.StateDirs)
 	p.StateEnv = maps.Clone(p.StateEnv)
 	return p
