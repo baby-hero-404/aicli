@@ -7,5 +7,8 @@ coverage.out
 coverage.html
 *.test
 dist/
+# web/dist is committed on purpose: @aicli/ui is installed from a git tag (no install scripts run
+# there), so the tag must carry the built files. Rebuild with `pnpm build` in web/ before tagging.
+!web/dist/
 .claude
 node_modules/
